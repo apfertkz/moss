@@ -9,7 +9,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", "0"))
+ALLOWED_USER_IDS = set(
+    int(x.strip()) for x in os.environ.get("ALLOWED_USER_ID", "0").split(",") if x.strip()
+)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -94,7 +96,7 @@ async def ask_claude(user_id, content):
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    if ALLOWED_USER_ID and message.from_user.id != ALLOWED_USER_ID:
+    if ALLOWED_USER_IDS - {0} and message.from_user.id not in ALLOWED_USER_IDS:
         return
     conversations[message.from_user.id] = []
     await message.answer(
@@ -107,7 +109,7 @@ async def start(message: Message):
 
 @dp.callback_query(F.data == "new_situation")
 async def new_situation(callback: CallbackQuery):
-    if ALLOWED_USER_ID and callback.from_user.id != ALLOWED_USER_ID:
+    if ALLOWED_USER_IDS - {0} and callback.from_user.id not in ALLOWED_USER_IDS:
         return
     conversations[callback.from_user.id] = []
     await callback.message.answer(
@@ -147,7 +149,7 @@ async def process_media_group(user_id, group_id, caption):
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
-    if ALLOWED_USER_ID and message.from_user.id != ALLOWED_USER_ID:
+    if ALLOWED_USER_IDS - {0} and message.from_user.id not in ALLOWED_USER_IDS:
         return
 
     photo = message.photo[-1]
@@ -203,7 +205,7 @@ async def handle_photo(message: Message):
 
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_text(message: Message):
-    if ALLOWED_USER_ID and message.from_user.id != ALLOWED_USER_ID:
+    if ALLOWED_USER_IDS - {0} and message.from_user.id not in ALLOWED_USER_IDS:
         return
 
     history = get_history(message.from_user.id)
