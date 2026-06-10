@@ -1,7 +1,9 @@
 import os
 import asyncio
 import base64
+import tempfile
 import anthropic
+from openai import AsyncOpenAI
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
@@ -9,6 +11,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ALLOWED_USER_IDS = set(
     int(x.strip()) for x in os.environ.get("ALLOWED_USER_ID", "0").split(",") if x.strip()
 )
@@ -16,11 +19,12 @@ ALLOWED_USER_IDS = set(
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # История диалогов: user_id -> list of messages
 conversations = {}
 
-# Медиагруппы: media_group_id -> list of images (для нескольких скринов)
+# Медиагруппы
 media_groups = {}
 media_group_timers = {}
 
@@ -64,6 +68,10 @@ def new_situation_keyboard():
     return builder.as_markup()
 
 
+def is_allowed(user_id):
+    return not (ALLOWED_USER_IDS - {0}) or user_id in ALLOWED_USER_IDS
+
+
 def get_history(user_id):
     if user_id not in conversations:
         conversations[user_id] = []
@@ -73,7 +81,6 @@ def get_history(user_id):
 def add_to_history(user_id, role, content):
     history = get_history(user_id)
     history.append({"role": role, "content": content})
-    # Храним последние 20 сообщений
     if len(history) > 20:
         conversations[user_id] = history[-20:]
 
@@ -94,14 +101,30 @@ async def ask_claude(user_id, content):
     return answer
 
 
+async def transcribe_voice(file_bytes: bytes) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    with open(tmp_path, "rb") as audio_file:
+        transcript = await openai_client.audio.transcriptions.create(
+            model="whisper-1",
+            file=("voice.ogg", audio_file, "audio/ogg"),
+            language="ru"
+        )
+
+    os.unlink(tmp_path)
+    return transcript.text
+
+
 @dp.message(CommandStart())
 async def start(message: Message):
-    if ALLOWED_USER_IDS - {0} and message.from_user.id not in ALLOWED_USER_IDS:
+    if not is_allowed(message.from_user.id):
         return
     conversations[message.from_user.id] = []
     await message.answer(
         "Привет! Скидывай скрины переписки с клиентом — разберу по методологии Гребенюка.\n\n"
-        "Можешь кидать сразу несколько скринов, задавать уточняющие вопросы и вести диалог.\n"
+        "Можешь кидать сразу несколько скринов, задавать уточняющие вопросы, писать или говорить голосовым.\n"
         "Когда начнёшь новую ситуацию — нажми кнопку ниже.",
         reply_markup=new_situation_keyboard()
     )
@@ -109,7 +132,7 @@ async def start(message: Message):
 
 @dp.callback_query(F.data == "new_situation")
 async def new_situation(callback: CallbackQuery):
-    if ALLOWED_USER_IDS - {0} and callback.from_user.id not in ALLOWED_USER_IDS:
+    if not is_allowed(callback.from_user.id):
         return
     conversations[callback.from_user.id] = []
     await callback.message.answer(
@@ -149,7 +172,7 @@ async def process_media_group(user_id, group_id, caption):
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
-    if ALLOWED_USER_IDS - {0} and message.from_user.id not in ALLOWED_USER_IDS:
+    if not is_allowed(message.from_user.id):
         return
 
     photo = message.photo[-1]
@@ -157,7 +180,6 @@ async def handle_photo(message: Message):
     file_bytes = await bot.download_file(file.file_path)
     image_data = base64.standard_b64encode(file_bytes.read()).decode("utf-8")
 
-    # Если это группа фото
     if message.media_group_id:
         group_id = message.media_group_id
         user_id = message.from_user.id
@@ -165,23 +187,18 @@ async def handle_photo(message: Message):
 
         if group_id not in media_groups:
             media_groups[group_id] = []
-
         media_groups[group_id].append(image_data)
 
-        # Отменяем предыдущий таймер если есть
         if group_id in media_group_timers:
             media_group_timers[group_id].cancel()
 
-        # Запускаем таймер — через 1.5 сек обрабатываем группу
         async def delayed():
             await asyncio.sleep(1.5)
             await process_media_group(user_id, group_id, caption)
 
         task = asyncio.create_task(delayed())
         media_group_timers[group_id] = task
-
     else:
-        # Одиночное фото
         await message.answer("Анализирую...")
         caption = message.caption or ""
         content = [
@@ -203,9 +220,42 @@ async def handle_photo(message: Message):
             await message.answer(f"Ошибка: {str(e)}")
 
 
+@dp.message(F.voice | F.audio)
+async def handle_voice(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+
+    await message.answer("Распознаю голосовое...")
+
+    try:
+        voice = message.voice or message.audio
+        file = await bot.get_file(voice.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+        audio_data = file_bytes.read()
+
+        text = await transcribe_voice(audio_data)
+
+        if not text.strip():
+            await message.answer("Не удалось распознать речь.")
+            return
+
+        await message.answer(f"🎤 _«{text}»_", parse_mode="Markdown")
+
+        history = get_history(message.from_user.id)
+        if not history:
+            await message.answer("Скидывай скриншот переписки — разберём ситуацию.")
+            return
+
+        answer = await ask_claude(message.from_user.id, text)
+        await message.answer(answer, parse_mode="Markdown", reply_markup=new_situation_keyboard())
+
+    except Exception as e:
+        await message.answer(f"Ошибка: {str(e)}")
+
+
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_text(message: Message):
-    if ALLOWED_USER_IDS - {0} and message.from_user.id not in ALLOWED_USER_IDS:
+    if not is_allowed(message.from_user.id):
         return
 
     history = get_history(message.from_user.id)
