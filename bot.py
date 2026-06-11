@@ -3,7 +3,7 @@ import asyncio
 import base64
 import tempfile
 import urllib.request
-import urllib.parse
+
 import anthropic
 from openai import AsyncOpenAI
 from aiogram import Bot, Dispatcher, F
@@ -105,6 +105,8 @@ async def transcribe_voice(file_bytes: bytes) -> str:
 
 
 def text_to_speech_sync(text: str) -> bytes:
+    from gtts import gTTS
+    import io
     clean = text.replace("**", "").replace("*", "").replace("#", "").replace("`", "").replace("_", "")
     if len(clean) > 1000:
         clean = clean[:1000]
