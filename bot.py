@@ -125,6 +125,7 @@ def text_to_speech_sync(text: str) -> bytes:
 
     req = urllib.request.Request(url, data=payload, method="POST")
     req.add_header("xi-api-key", ELEVENLABS_API_KEY)
+    req.add_header("Authorization", f"Bearer {ELEVENLABS_API_KEY}")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "audio/mpeg")
 
