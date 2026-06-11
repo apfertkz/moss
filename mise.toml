@@ -1,4 +1,4 @@
 [
 settings
 ]
-python.github_attestations = false
+python_github_attestations = false
