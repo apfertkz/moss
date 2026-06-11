@@ -2,21 +2,18 @@ import os
 import asyncio
 import base64
 import tempfile
+import urllib.request
+import urllib.parse
 import anthropic
 from openai import AsyncOpenAI
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-import urllib.request
-import urllib.error
-import json
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-ELEVENLABS_API_KEY = os.environ["ELEVENLABS_API_KEY"]
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "WTn2eCRCpoFAC50VD351")
 ALLOWED_USER_IDS = set(
     int(x.strip()) for x in os.environ.get("ALLOWED_USER_ID", "0").split(",") if x.strip()
 )
@@ -108,28 +105,21 @@ async def transcribe_voice(file_bytes: bytes) -> str:
 
 
 def text_to_speech_sync(text: str) -> bytes:
-    """Синхронный вызов ElevenLabs через urllib — без зависимостей"""
     clean = text.replace("**", "").replace("*", "").replace("#", "").replace("`", "").replace("_", "")
-    if len(clean) > 2500:
-        clean = clean[:2500]
+    if len(clean) > 1000:
+        clean = clean[:1000]
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
-    payload = json.dumps({
-        "text": clean,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75
-        }
-    }).encode("utf-8")
-
-    req = urllib.request.Request(url, data=payload, method="POST")
-    req.add_header("xi-api-key", ELEVENLABS_API_KEY)
-    req.add_header("Authorization", f"Bearer {ELEVENLABS_API_KEY}")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "audio/mpeg")
-
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    params = urllib.parse.urlencode({
+        "ie": "UTF-8",
+        "q": clean,
+        "tl": "ru",
+        "client": "tw-ob",
+    })
+    url = f"https://translate.google.com/translate_tts?{params}"
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    })
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read()
 
 
@@ -253,8 +243,7 @@ async def handle_voice(message: Message):
             await message.answer("Не удалось распознать речь.")
             return
         await message.answer(f"🎤 _{text}_", parse_mode="Markdown")
-        history = get_history(message.from_user.id)
-        if not history:
+        if not get_history(message.from_user.id):
             await message.answer("Сначала скинь скриншот переписки.")
             return
         answer = await ask_claude(message.from_user.id, text)
