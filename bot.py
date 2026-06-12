@@ -1,11 +1,11 @@
 import os
+import io
 import asyncio
 import base64
 import tempfile
 import urllib.request
-
 import anthropic
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart
@@ -21,7 +21,8 @@ ALLOWED_USER_IDS = set(
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_async = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_sync = OpenAI(api_key=OPENAI_API_KEY)
 
 conversations = {}
 media_groups = {}
@@ -95,7 +96,7 @@ async def transcribe_voice(file_bytes: bytes) -> str:
         tmp.write(file_bytes)
         tmp_path = tmp.name
     with open(tmp_path, "rb") as audio_file:
-        transcript = await openai_client.audio.transcriptions.create(
+        transcript = await openai_async.audio.transcriptions.create(
             model="whisper-1",
             file=("voice.ogg", audio_file, "audio/ogg"),
             language="ru"
@@ -105,24 +106,18 @@ async def transcribe_voice(file_bytes: bytes) -> str:
 
 
 def text_to_speech_sync(text: str) -> bytes:
-    from gtts import gTTS
-    import io
     clean = text.replace("**", "").replace("*", "").replace("#", "").replace("`", "").replace("_", "")
-    if len(clean) > 1000:
-        clean = clean[:1000]
-
-    params = urllib.parse.urlencode({
-        "ie": "UTF-8",
-        "q": clean,
-        "tl": "ru",
-        "client": "tw-ob",
-    })
-    url = f"https://translate.google.com/translate_tts?{params}"
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    })
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
+    if len(clean) > 2000:
+        clean = clean[:2000]
+    response = openai_sync.audio.speech.create(
+        model="tts-1",
+        voice="onyx",
+        input=clean,
+    )
+    buf = io.BytesIO()
+    for chunk in response.iter_bytes():
+        buf.write(chunk)
+    return buf.getvalue()
 
 
 async def text_to_speech(text: str) -> bytes:
