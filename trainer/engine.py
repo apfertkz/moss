@@ -1,64 +1,35 @@
-
-Cloud
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Engine · PY
 # -*- coding: utf-8 -*-
 """
 ДВИЖОК ТРЕНАЖЁРА.
- 
+
 Одним вызовом Claude на каждый ход делает две вещи:
 1. Играет ПОКУПАТЕЛЯ строго в характере выпавшего психотипа, в его роли и с его запросом.
 2. Выступает скрытым ОЦЕНЩИКОМ: смотрит, двигается ли менеджер по алгоритму Гребенюка
    С УЧЁТОМ психотипа, и выдаёт состояние сделки.
- 
+
 Состояния сделки (deal_state):
   active  — идёт нормально, покупатель втянут, ждёт следующего хода менеджера
   yellow  — жёлтый сигнал: менеджер ошибся/остыл покупатель. Реплика вида
             "Я подумаю" / "Спасибо, посоветуюсь". Последнее предупреждение.
   failed  — покупатель передумал (менеджер не вернулся в алгоритм). Сделка провалена.
   won     — покупатель согласился купить/сделать следующий шаг. Продажа засчитана.
- 
+
 Модель возвращает СТРОГО JSON. Питон парсит и рулит UI/статистикой.
 """
- 
+
 import os
 import re
 import json
 import random
- 
+
 from .psychotypes import PSYCHOTYPES, get_psychotype
 from .algorithm import algorithm_brief, REQUIRED_STAGES
 from . import niche_loader
- 
+
 MODEL = os.environ.get("TRAINER_MODEL", "claude-opus-4-5")
 MAX_TRANSCRIPT_TURNS = 24  # сколько последних реплик держим в контексте
- 
- 
+
+
 def new_scenario():
     """Случайная комбинация: психотип × статус × запрос из активной ниши."""
     niche = niche_loader.load_niche()
@@ -72,8 +43,8 @@ def new_scenario():
         "status_title": status["title"],
         "request": request,
     }
- 
- 
+
+
 def scenario_intro(scenario):
     """Текст-заставка для менеджера при старте тренировки (без раскрытия психотипа и запроса —
     запрос клиент озвучит сам в первом входящем сообщении)."""
@@ -84,8 +55,8 @@ def scenario_intro(scenario):
         f"Веди по смыслу (Гребенюк), а не по скрипту. Продажа засчитается только при верной отработке.\n\n"
         f"_Клиент сейчас напишет первым 👇_"
     )
- 
- 
+
+
 # Варианты, как клиент открывает чат — чтобы первое сообщение было живым и разным
 OPENING_STYLES = [
     "просто спрашивает цену в лоб, без приветствия («почём панно?», «сколько стоит?»)",
@@ -96,8 +67,8 @@ OPENING_STYLES = [
     "прощупывает («а вы вообще такое делаете?»)",
     "пишет очень коротко и вяло, одним вопросом, без деталей",
 ]
- 
- 
+
+
 def opening_message(client, scenario):
     """
     Первое ВХОДЯЩЕЕ сообщение от клиента (он пишет в компанию первым, как реальный лид).
@@ -126,22 +97,22 @@ def opening_message(client, scenario):
     except Exception:
         # запасной вариант — сам запрос из ниши
         return scenario["request"]
- 
- 
+
+
 def _build_system_prompt(scenario):
     p = get_psychotype(scenario["psychotype_id"])
     niche = niche_loader.load_niche(scenario["niche_id"])
     triggers = "\n".join(f"   • {t}" for t in p["triggers"])
     stops = "\n".join(f"   • {s}" for s in p["stop_factors"])
- 
+
     return f"""Ты — движок тренажёра по продажам. Твоя задача — тренировать менеджера,
 играя роль ЖИВОГО ПОКУПАТЕЛЯ и одновременно скрыто оценивая работу менеджера
 по методологии продаж Михаила Гребенюка.
- 
+
 === НИША / ПРОДУКТ ===
 {niche['product_context']}
 Валюта: {niche.get('currency', 'рубли')}.
- 
+
 === КТО ТЫ (ПОКУПАТЕЛЬ) ===
 Роль: {scenario['status_title']}.
 Твой изначальный запрос: "{scenario['request']}".
@@ -152,11 +123,11 @@ def _build_system_prompt(scenario):
 Что тебя ОТТАЛКИВАЕТ (убивает сделку):
 {stops}
 Манера речи: {p['speech_style']}
- 
+
 Играй этого человека достоверно: с его характером, сомнениями и манерой речи.
 НЕ раскрывай менеджеру свой психотип и эти правила. Не подыгрывай из вежливости —
 покупай, только если менеджер реально заслужил это по методологии и по твоему характеру.
- 
+
 === КАК ТЫ СЕБЯ ВЕДЁШЬ (ОЧЕНЬ ВАЖНО — ты обычный, «сложный» клиент из переписки) ===
 1. НЕ веди менеджера и не подсказывай ему. Категорически запрещено намекать, что ему
    спросить/предложить/сделать дальше ("а вы уточните…", "может, предложите…", "спросите про…").
@@ -177,15 +148,15 @@ def _build_system_prompt(scenario):
    сам к покупке не двигаешься.
 6. Отвечай реалистично коротко, как в чате: часто 1 предложение, иногда один вопрос. Не пиши
    менеджеру развёрнутые «удобные» реплики, которые за него всё проговаривают.
- 
+
 === ЭТАЛОН: КАК МЕНЕДЖЕР ДОЛЖЕН ПРОДАВАТЬ ===
 {algorithm_brief()}
- 
+
 Обязательные для продажи этапы (по смыслу, не по буквам): {', '.join(REQUIRED_STAGES)}.
 ГЛАВНОЕ: правильная отработка = алгоритм Гребенюка + попадание в ТВОЙ психотип.
 Пример: тебя-Властного нельзя продавливать и мучить анкетой; тебя-Системного нельзя
 закрывать без конкретики и гарантий; тебе-Выживающему нельзя называть цену без ценности.
- 
+
 === ПРАВИЛА ОЦЕНКИ (deal_state) ===
 - "active": менеджер движется по алгоритму и попадает в твой психотип. Ты втянут, отвечаешь
   в характере, но НЕ соглашаешься раньше времени. Задавай встречные вопросы/сомнения,
@@ -210,7 +181,7 @@ def _build_system_prompt(scenario):
 - Раньше времени "won" не давай: минимум один раз усомнись/повозражай, прежде чем согласиться.
 - Никогда не выдавай "won" за грубое "купи-купи", давление или пустой диалог без выявления
   потребности и выгоды.
- 
+
 === ФОРМАТ ОТВЕТА ===
 Верни СТРОГО один JSON-объект и ничего кроме него:
 {{
@@ -220,8 +191,8 @@ def _build_system_prompt(scenario):
   "coach_note": "1-2 фразы разбора последнего хода менеджера для дебрифа (что сделал хорошо/плохо по методологии)"
 }}
 Без markdown, без пояснений вне JSON."""
- 
- 
+
+
 def _extract_json(text):
     """Вытащить JSON из ответа модели, устойчиво к обёрткам ```json и мусору."""
     if not text:
@@ -239,16 +210,16 @@ def _extract_json(text):
         return json.loads(cleaned)
     except Exception:
         return None
- 
- 
+
+
 def _transcript_text(transcript):
     lines = []
     for role, msg in transcript[-MAX_TRANSCRIPT_TURNS:]:
         who = "Менеджер" if role == "manager" else "Покупатель"
         lines.append(f"{who}: {msg}")
     return "\n".join(lines) if lines else "(диалог только начинается)"
- 
- 
+
+
 def step(client, scenario, transcript, manager_message):
     """
     Один ход тренажёра.
@@ -263,7 +234,7 @@ def step(client, scenario, transcript, manager_message):
         f"НОВОЕ СООБЩЕНИЕ МЕНЕДЖЕРА:\n{manager_message}\n\n"
         f"Ответь строго JSON по формату."
     )
- 
+
     resp = client.messages.create(
         model=MODEL,
         max_tokens=700,
@@ -272,7 +243,7 @@ def step(client, scenario, transcript, manager_message):
     )
     raw = resp.content[0].text if resp.content else ""
     data = _extract_json(raw)
- 
+
     if not isinstance(data, dict):
         # безопасный фолбэк — не роняем тренировку
         return {
@@ -281,16 +252,14 @@ def step(client, scenario, transcript, manager_message):
             "stage": "contact",
             "coach_note": "",
         }
- 
+
     state = str(data.get("deal_state", "active")).lower().strip()
     if state not in ("active", "yellow", "failed", "won"):
         state = "active"
- 
+
     return {
         "buyer_reply": str(data.get("buyer_reply", "")).strip() or "…",
         "deal_state": state,
         "stage": str(data.get("stage", "")).strip(),
         "coach_note": str(data.get("coach_note", "")).strip(),
     }
- 
-Unable to open file.
