@@ -16,6 +16,6 @@
     register_trainer(dp, bot, client, is_allowed)
 """
 
-from .handlers import register_trainer
+from .handlers import register_trainer, main_reply_kb
 
-__all__ = ["register_trainer"]
+__all__ = ["register_trainer", "main_reply_kb"]
