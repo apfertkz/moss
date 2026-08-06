@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from trainer import register_trainer
+from trainer import register_trainer, main_reply_kb
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -149,10 +149,12 @@ async def start(message: Message):
     if not is_allowed(message.from_user.id):
         return
     conversations[message.from_user.id] = []
+    # Постоянная нижняя клавиатура: «🎯 Тренажёр» и «📊 Статистика» всегда под рукой
     await message.answer(
         "Привет! Скидывай скрины переписки — разберу по Гребенюку.\n\n"
-        "🔊 Кнопка озвучит последний ответ голосом.",
-        reply_markup=new_situation_keyboard()
+        "🎯 Кнопка «Тренажёр» внизу — потренироваться на живых клиентах.\n"
+        "🔊 Кнопка под ответом озвучит его голосом.",
+        reply_markup=main_reply_kb()
     )
 
 
