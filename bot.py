@@ -10,6 +10,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from trainer import register_trainer
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -56,12 +57,19 @@ def new_situation_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🔄 Новая ситуация", callback_data="new_situation")
     builder.button(text="🔊 Озвучить", callback_data="voice_last")
-    builder.adjust(2)
+    builder.button(text="🎯 Тренажёр", callback_data="trainer_menu")
+    builder.adjust(2, 1)
     return builder.as_markup()
 
 
 def is_allowed(user_id):
     return not (ALLOWED_USER_IDS - {0}) or user_id in ALLOWED_USER_IDS
+
+
+# --- Тренажёр по продажам (отдельный модуль) ---
+# Регистрируем ДО консультант-хендлеров, чтобы при активной тренировке
+# ввод менеджера перехватывался тренажёром, а не анализатором скринов.
+register_trainer(dp, bot, client, is_allowed)
 
 
 def get_history(user_id):
