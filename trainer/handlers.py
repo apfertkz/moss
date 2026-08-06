@@ -14,6 +14,7 @@
 """
 
 import asyncio
+import base64
 
 from aiogram import F
 from aiogram.types import (
@@ -31,6 +32,10 @@ from . import stats
 # user_id -> сессия тренировки
 # {"scenario": {...}, "transcript": [(role, text)...], "turns": int}
 SESSIONS = {}
+
+# Буфер для альбомов фото внутри тренажёра (media_group_id -> [base64...])
+MEDIA_GROUPS = {}
+MEDIA_TIMERS = {}
 
 # Метки постоянных нижних кнопок
 BTN_TRAINER = "🎯 Тренажёр"       # виден в режиме консультанта
@@ -195,30 +200,70 @@ def register_trainer(dp, bot, client, is_allowed=None):
             reply_markup=main_reply_kb(),
         )
 
-    # ---------- Фото/голос во время сессии: просим текст ----------
+    # ---------- Голос во время сессии: просим текст ----------
 
-    @dp.message((F.photo | F.voice | F.audio), _in_session)
+    @dp.message((F.voice | F.audio), _in_session)
     async def wrong_input_in_session(message: Message):
-        await message.answer("В тренажёре общайся с клиентом *текстом* 🙂", parse_mode="Markdown")
+        await message.answer(
+            "В тренажёре пиши клиенту *текстом* (фото присылать можно 📸)",
+            parse_mode="Markdown",
+        )
+
+    # ---------- Фото во время сессии: клиент реально их видит и оценивает ----------
+
+    @dp.message(F.photo, _in_session)
+    async def photo_in_session(message: Message):
+        uid = message.from_user.id
+        if uid not in SESSIONS:
+            return
+        photo = message.photo[-1]
+        file = await bot.get_file(photo.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+        image_data = base64.standard_b64encode(file_bytes.read()).decode("utf-8")
+        caption = (message.caption or "").strip()
+
+        if message.media_group_id:
+            gid = message.media_group_id
+            MEDIA_GROUPS.setdefault(gid, []).append(image_data)
+            if gid in MEDIA_TIMERS:
+                MEDIA_TIMERS[gid].cancel()
+
+            async def delayed():
+                await asyncio.sleep(1.5)
+                imgs = MEDIA_GROUPS.pop(gid, [])
+                MEDIA_TIMERS.pop(gid, None)
+                if imgs:
+                    await process_turn(message, uid, caption, images=imgs)
+
+            MEDIA_TIMERS[gid] = asyncio.create_task(delayed())
+        else:
+            await process_turn(message, uid, caption, images=[image_data])
 
     # ---------- Основной ход: текст менеджера во время сессии ----------
 
     @dp.message(F.text & ~F.text.startswith("/"), _in_session)
     async def training_turn(message: Message):
-        uid = message.from_user.id
+        await process_turn(message, message.from_user.id, message.text)
+
+    # ---------- Общая обработка хода (текст и/или фото) ----------
+
+    async def process_turn(message: Message, uid: int, manager_text: str, images=None):
         session = SESSIONS.get(uid)
         if not session:
             return
 
         scenario = session["scenario"]
-        session["transcript"].append(("manager", message.text))
+        if images:
+            label = f"[прислал фото: {len(images)} шт.]"
+            manager_text = f"{label} {manager_text}".strip() if manager_text else label
+        session["transcript"].append(("manager", manager_text))
         session["turns"] += 1
 
         await bot.send_chat_action(uid, "typing")
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, engine.step, client, scenario, session["transcript"], message.text
+                None, engine.step, client, scenario, session["transcript"], manager_text, images
             )
         except Exception as e:
             await message.answer(f"⚠️ Ошибка тренажёра: {e}")
