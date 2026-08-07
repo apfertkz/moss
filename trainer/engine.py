@@ -9,45 +9,56 @@
 
 Состояния сделки (deal_state):
   active  — идёт нормально, покупатель втянут, ждёт следующего хода менеджера
-  yellow  — жёлтый сигнал: менеджер ошибся/остыл покупатель. Реплика вида
-            "Я подумаю" / "Спасибо, посоветуюсь". Последнее предупреждение.
-  failed  — покупатель передумал (менеджер не вернулся в алгоритм). Сделка провалена.
+  yellow  — жёлтый сигнал: менеджер ошибся/остыл покупатель. Последнее предупреждение.
+  failed  — покупатель передумал. Сделка провалена.
   won     — покупатель согласился купить/сделать следующий шаг. Продажа засчитана.
 
-Модель возвращает СТРОГО JSON. Питон парсит и рулит UI/статистикой.
+ЧТО ИЗМЕНИЛОСЬ В МУЛЬТИАРЕНДНОЙ ВЕРСИИ:
+  • Профиль ниши больше не читается из файла — он приходит аргументом из базы,
+    свой у каждой компании.
+  • Системный промпт помечен для кеширования. В рамках одной тренировки он
+    неизменен, но раньше пересылался целиком на каждом ходе: 42 000 токенов
+    за сессию вместо 3 500. Кеш снижает себестоимость тренировки вдвое.
+  • Каждый вызов возвращает фактический расход токенов — он пишется в usage_log.
+  • Диалог ведёт Sonnet, финальный разбор делает Opus (один вызов на сессию).
 """
 
 import os
 import re
 import json
 import random
+import logging
 
 from .psychotypes import PSYCHOTYPES, get_psychotype
 from .algorithm import algorithm_brief, REQUIRED_STAGES
-from . import niche_loader
+from . import costs
 
-MODEL = os.environ.get("TRAINER_MODEL", "claude-opus-4-5")
-MAX_TRANSCRIPT_TURNS = 24  # сколько последних реплик держим в контексте
+log = logging.getLogger(__name__)
+
+# Диалог — модель подешевле: на неё приходится 90% вызовов.
+DIALOG_MODEL = os.environ.get("TRAINER_MODEL", "claude-sonnet-5")
+# Финальный разбор — самая сильная модель, но один вызов на всю тренировку.
+DEBRIEF_MODEL = os.environ.get("DEBRIEF_MODEL", "claude-opus-5")
+
+MAX_TRANSCRIPT_TURNS = 24
 
 
-def new_scenario():
-    """Случайная комбинация: психотип × статус × запрос из активной ниши."""
-    niche = niche_loader.load_niche()
+def new_scenario(profile):
+    """Случайная комбинация: психотип × статус × запрос из профиля компании."""
     psychotype = random.choice(PSYCHOTYPES)
-    status = random.choice(niche["statuses"])
-    request = random.choice(niche["requests"])
+    status = random.choice(profile["statuses"])
+    request = random.choice(profile["requests"])
     return {
-        "niche_id": niche["id"],
+        "niche_id": profile.get("id", "custom"),
         "psychotype_id": psychotype["id"],
-        "status_id": status["id"],
+        "status_id": status.get("id"),
         "status_title": status["title"],
         "request": request,
     }
 
 
 def scenario_intro(scenario):
-    """Текст-заставка для менеджера при старте тренировки (без раскрытия психотипа и запроса —
-    запрос клиент озвучит сам в первом входящем сообщении)."""
+    """Заставка для менеджера при старте тренировки."""
     return (
         f"🎯 *Новый клиент — входящая заявка*\n\n"
         f"👤 *Кто:* {scenario['status_title']}\n\n"
@@ -57,7 +68,6 @@ def scenario_intro(scenario):
     )
 
 
-# Варианты, как клиент открывает чат — чтобы первое сообщение было живым и разным
 OPENING_STYLES = [
     "просто спрашивает цену в лоб, без приветствия («почём панно?», «сколько стоит?»)",
     "сразу просит показать примеры/фото работ («а примеры есть?», «фото работ скиньте»)",
@@ -69,39 +79,23 @@ OPENING_STYLES = [
 ]
 
 
-def opening_message(client, scenario):
+def _system_blocks(scenario, profile):
     """
-    Первое ВХОДЯЩЕЕ сообщение от клиента (он пишет в компанию первым, как реальный лид).
-    Живое, короткое, в манере психотипа и в случайном стиле. Возвращает текст (не JSON).
+    Системный промпт как список блоков с пометкой кеширования.
+
+    Пометка cache_control ставится на последний блок: всё, что до неё, Anthropic
+    сохраняет и на следующих ходах считает по цене чтения кеша (10% от входящих).
+    Промпт в рамках сессии не меняется, поэтому кеш попадает на каждом ходе, кроме первого.
     """
-    system = _build_system_prompt(scenario)
-    style = random.choice(OPENING_STYLES)
-    user_content = (
-        f"Начало диалога. Ты, как этот покупатель, пишешь ПЕРВЫМ в компанию — это входящая "
-        f"заявка в чат (Instagram/WhatsApp/Telegram). Твой внутренний запрос: \"{scenario['request']}\", "
-        f"но необязательно раскрывать его сразу и полностью.\n"
-        f"Манера этого сообщения: {style}.\n"
-        f"Пиши коротко и живо, как реальный человек в переписке (1-2 предложения). "
-        f"Верни ТОЛЬКО текст сообщения, без кавычек и пояснений."
-    )
-    try:
-        resp = client.messages.create(
-            model=MODEL,
-            max_tokens=200,
-            system=system,
-            messages=[{"role": "user", "content": user_content}],
-        )
-        text = (resp.content[0].text if resp.content else "").strip()
-        text = text.strip().strip('"').strip()
-        return text or scenario["request"]
-    except Exception:
-        # запасной вариант — сам запрос из ниши
-        return scenario["request"]
+    return [{
+        "type": "text",
+        "text": _build_system_prompt(scenario, profile),
+        "cache_control": {"type": "ephemeral"},
+    }]
 
 
-def _build_system_prompt(scenario):
+def _build_system_prompt(scenario, profile):
     p = get_psychotype(scenario["psychotype_id"])
-    niche = niche_loader.load_niche(scenario["niche_id"])
     triggers = "\n".join(f"   • {t}" for t in p["triggers"])
     stops = "\n".join(f"   • {s}" for s in p["stop_factors"])
 
@@ -110,8 +104,8 @@ def _build_system_prompt(scenario):
 по методологии продаж Михаила Гребенюка.
 
 === НИША / ПРОДУКТ ===
-{niche['product_context']}
-Валюта: {niche.get('currency', 'рубли')}.
+{profile['product_context']}
+Валюта: {profile.get('currency', 'тенге')}.
 
 === КТО ТЫ (ПОКУПАТЕЛЬ) ===
 Роль: {scenario['status_title']}.
@@ -135,11 +129,8 @@ def _build_system_prompt(scenario):
    коротко и холодеешь, а НЕ помогаешь ему продать.
 2. Ты «покупаешь глазами». Довольно быстро проси показать примеры/фото работ/портфолио
    ("а примеры есть?", "фото работ скиньте", "покажите, что делали"). Пока не увидел картинку и
-   не понял выгоду — не загораешься.
-   ВАЖНО: менеджер может присылать тебе НАСТОЯЩИЕ ФОТО прямо в чат — ты их видишь и должен
-   оценивать по существу (нравится/не нравится, подходит ли под твой запрос и интерьер, что
-   смущает). Если он только пообещал прислать ("сейчас скину") и не прислал — напомни и попроси
-   реально показать. Обещание вместо картинки тебя не убеждает.
+   не понял выгоду — не загораешься. (Менеджер может ответить, что сейчас пришлёт примеры — это
+   нормальный правильный ход, засчитывай его как выполненный.)
 3. Ты НЕ знаешь точно, чего хочешь. У тебя есть смутное желание «чтоб красиво/атмосферно», а не
    готовое ТЗ. Не выдавай сразу размеры, задачи и детали — менеджер должен их вытащить сам.
    Реагируешь на красивую картинку и на выгоду, а не на характеристики.
@@ -200,11 +191,9 @@ def _extract_json(text):
     """Вытащить JSON из ответа модели, устойчиво к обёрткам ```json и мусору."""
     if not text:
         return None
-    # убрать кодовые заборы
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?", "", cleaned).strip()
     cleaned = re.sub(r"```$", "", cleaned).strip()
-    # взять от первой { до последней }
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -223,62 +212,63 @@ def _transcript_text(transcript):
     return "\n".join(lines) if lines else "(диалог только начинается)"
 
 
-def step(client, scenario, transcript, manager_message, images=None):
+def opening_message(client, scenario, profile):
     """
-    Один ход тренажёра.
-    client — anthropic.Anthropic (синхронный клиент из bot.py).
-    transcript — список кортежей (role, text), role in {'manager','buyer'}.
-    images — список base64-строк (jpeg) с фото, которые менеджер прислал клиенту.
-             Покупатель РЕАЛЬНО их видит и оценивает.
-    Возвращает dict: buyer_reply, deal_state, stage, coach_note.
-    Питон-подстраховка: гарантирует валидный deal_state.
+    Первое ВХОДЯЩЕЕ сообщение от клиента. Возвращает (текст, расход).
+    Этот же вызов создаёт кеш системного промпта для остальных ходов.
     """
-    system = _build_system_prompt(scenario)
-
-    if images:
-        photo_note = (
-            f"\n\nМЕНЕДЖЕР ПРИСЛАЛ ТЕБЕ ФОТО ({len(images)} шт.) — они выше. "
-            f"Посмотри на них как реальный клиент: понравилось или нет, подходит ли это под твой "
-            f"запрос, интерьер и вкус. Реагируй КОНКРЕТНО на то, что видишь (что зацепило, что "
-            f"смущает, что не то), а не общими словами. Если менеджер показал релевантные работы — "
-            f"засчитай этап «показал примеры/визуал» как выполненный. Если фото не в тему или "
-            f"без пояснения выгоды — оставайся холодным и скажи почему."
+    style = random.choice(OPENING_STYLES)
+    user_content = (
+        f"Начало диалога. Ты, как этот покупатель, пишешь ПЕРВЫМ в компанию — это входящая "
+        f"заявка в чат (Instagram/WhatsApp/Telegram). Твой внутренний запрос: \"{scenario['request']}\", "
+        f"но необязательно раскрывать его сразу и полностью.\n"
+        f"Манера этого сообщения: {style}.\n"
+        f"Пиши коротко и живо, как реальный человек в переписке (1-2 предложения). "
+        f"Верни ТОЛЬКО текст сообщения, без кавычек и пояснений."
+    )
+    try:
+        resp = client.messages.create(
+            model=DIALOG_MODEL,
+            max_tokens=200,
+            system=_system_blocks(scenario, profile),
+            messages=[{"role": "user", "content": user_content}],
         )
-    else:
-        photo_note = ""
+        text = (resp.content[0].text if resp.content else "").strip().strip('"').strip()
+        return (text or scenario["request"]), costs.usage_dict(resp)
+    except Exception as e:
+        log.warning("Не удалось сгенерировать первое сообщение: %s", e)
+        return scenario["request"], costs.usage_dict(None)
 
-    text_block = (
+
+def step(client, scenario, profile, transcript, manager_message):
+    """
+    Один ход тренажёра. Возвращает dict с ответом покупателя, состоянием сделки
+    и расходом токенов под ключом "usage".
+    """
+    user_content = (
         f"ДИАЛОГ ДО СИХ ПОР:\n{_transcript_text(transcript)}\n\n"
-        f"НОВОЕ СООБЩЕНИЕ МЕНЕДЖЕРА:\n{manager_message}"
-        f"{photo_note}\n\n"
+        f"НОВОЕ СООБЩЕНИЕ МЕНЕДЖЕРА:\n{manager_message}\n\n"
         f"Ответь строго JSON по формату."
     )
 
-    if images:
-        content = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img}}
-            for img in images
-        ]
-        content.append({"type": "text", "text": text_block})
-    else:
-        content = text_block
-
     resp = client.messages.create(
-        model=MODEL,
+        model=DIALOG_MODEL,
         max_tokens=700,
-        system=system,
-        messages=[{"role": "user", "content": content}],
+        system=_system_blocks(scenario, profile),
+        messages=[{"role": "user", "content": user_content}],
     )
+    usage = costs.usage_dict(resp)
     raw = resp.content[0].text if resp.content else ""
     data = _extract_json(raw)
 
     if not isinstance(data, dict):
-        # безопасный фолбэк — не роняем тренировку
+        log.warning("Модель вернула не-JSON, длина ответа %s", len(raw))
         return {
             "buyer_reply": "Хм, не совсем понял вас. Можете пояснить?",
             "deal_state": "active",
             "stage": "contact",
             "coach_note": "",
+            "usage": usage,
         }
 
     state = str(data.get("deal_state", "active")).lower().strip()
@@ -290,4 +280,55 @@ def step(client, scenario, transcript, manager_message, images=None):
         "deal_state": state,
         "stage": str(data.get("stage", "")).strip(),
         "coach_note": str(data.get("coach_note", "")).strip(),
+        "usage": usage,
     }
+
+
+DEBRIEF_SYSTEM = """Ты — наставник отдела продаж, работающий по методологии Михаила Гребенюка.
+Тебе дают стенограмму тренировочного диалога менеджера с покупателем и итог сделки.
+
+Разбери работу менеджера коротко и по делу, без воды и без похвалы авансом.
+Пиши на «ты», как разбирают на планёрке. Формат ответа — ровно такой:
+
+🎯 Что сработало
+<одна-две строки; если не сработало ничего — так и напиши>
+
+⚠️ Где потерял
+<главная ошибка и на каком этапе алгоритма она случилась>
+
+💬 Как надо было
+<конкретная формулировка, которую следовало сказать вместо этого — готовая реплика>
+
+📌 Отработать
+<один навык на следующую тренировку>
+
+Не пересказывай диалог. Не льсти. Максимум 900 знаков."""
+
+
+def final_debrief(client, scenario, profile, transcript, result):
+    """
+    Финальный разбор тренировки. Один вызов на сессию, на самой сильной модели.
+    Возвращает (текст, расход).
+    """
+    outcome = "менеджер закрыл сделку" if result == "won" else "клиент отказался"
+    p = get_psychotype(scenario["psychotype_id"])
+    user_content = (
+        f"Ниша: {profile.get('title', '')}\n"
+        f"Покупатель: {scenario['status_title']}, психотип «{p['name']}» "
+        f"(мотивация: {p['motivation']}).\n"
+        f"Скрытый запрос покупателя: {scenario['request']}\n"
+        f"Итог: {outcome}.\n\n"
+        f"СТЕНОГРАММА:\n{_transcript_text(transcript)}"
+    )
+    try:
+        resp = client.messages.create(
+            model=DEBRIEF_MODEL,
+            max_tokens=900,
+            system=DEBRIEF_SYSTEM,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        text = (resp.content[0].text if resp.content else "").strip()
+        return text, costs.usage_dict(resp)
+    except Exception as e:
+        log.warning("Разбор не удался: %s", e)
+        return "", costs.usage_dict(None)

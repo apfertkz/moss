@@ -1,21 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-Модуль «Тренажёр по продажам» для Telegram-бота.
+Тренажёр отдела продаж — мультиарендная версия.
 
-Архитектура (модульно, чтобы переносить на любой бизнес):
-  psychotypes.py  — 5 универсальных психотипов (спиральная динамика)
-  algorithm.py    — эталонный смысловой алгоритм продажи по Гребенюку
-  niches/*.json   — подключаемые ниша-паки (что продаём, кому, какие запросы)
-  niche_loader.py — загрузка активной ниши (env TRAINER_NICHE, по умолчанию moss)
-  engine.py       — Claude играет покупателя + скрыто оценивает по алгоритму
-  stats.py        — статистика на SQLite + отчёт
-  handlers.py     — кнопки, поток тренировки, интеграция в aiogram
+Один экземпляр бота обслуживает много компаний. Компания определяется по
+telegram_id пользователя, профиль ниши и статистика — свои у каждой.
 
-Подключение в bot.py:
-    from trainer import register_trainer
-    register_trainer(dp, bot, client, is_allowed)
+Модули:
+  db          — PostgreSQL: пул соединений и схема
+  tenancy     — компании, сотрудники, роли, тарифы, лимиты
+  onboarding  — вход по ссылке: активация владельца и приглашение менеджеров
+  niche_loader— профили ниш в базе, валидация схемы
+  engine      — движок диалога: покупатель + скрытая оценка + разбор
+  psychotypes — пять психотипов по спиральной динамике
+  algorithm   — эталонный алгоритм продажи по Гребенюку
+  stats       — статистика по менеджеру и по отделу, учёт расхода
+  costs       — цены моделей и расчёт себестоимости вызова
+  handlers    — хендлеры aiogram
 """
 
-from .handlers import register_trainer, main_reply_kb
+from .handlers import register_trainer, main_reply_kb, trainer_reply_kb
+from . import db, tenancy, onboarding, niche_loader, stats, engine, costs
 
-__all__ = ["register_trainer", "main_reply_kb"]
+__all__ = [
+    "register_trainer", "main_reply_kb", "trainer_reply_kb",
+    "db", "tenancy", "onboarding", "niche_loader", "stats", "engine", "costs",
+]
