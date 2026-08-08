@@ -10,6 +10,7 @@ telegram_id пользователя, профиль ниши и статист�
   tenancy     — компании, сотрудники, роли, тарифы, лимиты
   onboarding  — вход по ссылке: активация владельца и приглашение менеджеров
   niche_loader— профили ниш в базе, валидация схемы
+  brief       — мастер брифа: восемь вопросов → профиль ниши
   engine      — движок диалога: покупатель + скрытая оценка + разбор
   psychotypes — пять психотипов по спиральной динамике
   algorithm   — эталонный алгоритм продажи по Гребенюку
@@ -19,9 +20,9 @@ telegram_id пользователя, профиль ниши и статист�
 """
 
 from .handlers import register_trainer, main_reply_kb, trainer_reply_kb
-from . import db, tenancy, onboarding, niche_loader, stats, engine, costs
+from . import db, tenancy, onboarding, niche_loader, stats, engine, costs, brief
 
 __all__ = [
     "register_trainer", "main_reply_kb", "trainer_reply_kb",
-    "db", "tenancy", "onboarding", "niche_loader", "stats", "engine", "costs",
+    "db", "tenancy", "onboarding", "niche_loader", "stats", "engine", "costs", "brief",
 ]

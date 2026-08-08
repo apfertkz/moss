@@ -26,8 +26,9 @@ from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile,
 )
 from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from . import engine, stats, tenancy, niche_loader
+from . import engine, stats, tenancy, niche_loader, brief
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,10 @@ def _in_session(message: Message) -> bool:
     return message.from_user.id in SESSIONS
 
 
+def _in_brief(message: Message) -> bool:
+    return brief.is_active(message.from_user.id)
+
+
 def register_trainer(dp, bot, client):
     """Регистрирует хендлеры тренажёра."""
 
@@ -79,6 +84,158 @@ def register_trainer(dp, bot, client):
 
     def _is_owner(u):
         return u and u["role"] == tenancy.ROLE_OWNER
+
+    # ======================================================================
+    # МАСТЕР БРИФА
+    # Регистрируется ПЕРВЫМ: пока владелец отвечает на вопросы, его текст
+    # не должен попадать ни в тренажёр, ни в разбор скринов.
+    # ======================================================================
+
+    def _draft_kb():
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Подходит", callback_data="brief_ok")
+        b.button(text="🔁 Переделать", callback_data="brief_redo")
+        b.adjust(2)
+        return b.as_markup()
+
+    async def _ask(message: Message, q):
+        w = brief.WIZARDS.get(message.from_user.id)
+        step = w["step"] + 1
+        total = len(brief.QUESTIONS)
+        await message.answer(
+            f"{brief.progress_bar(w['step'], total)}\n\n"
+            f"{brief.question_text(q, step, total)}",
+            parse_mode="Markdown",
+        )
+
+    async def _build_profile(message: Message, u, remark=None):
+        uid = message.from_user.id
+        loop = asyncio.get_event_loop()
+        await message.answer("Собираю профиль вашей ниши — это займёт полминуты…")
+        await bot.send_chat_action(uid, "typing")
+
+        profile, err, usage = await loop.run_in_executor(
+            None, brief.generate, client, uid, remark)
+
+        if usage:
+            await loop.run_in_executor(None, stats.record_usage, u["company_id"], uid,
+                                       "brief", brief.MODEL, usage)
+        if err:
+            await message.answer(f"⚠️ {err}")
+            return
+
+        await message.answer(
+            "Вот что получилось. Проверьте — по этому описанию бот будет "
+            "играть ваших клиентов.\n\n" + niche_loader.describe(profile),
+            parse_mode="Markdown", reply_markup=_draft_kb(),
+        )
+
+    @dp.message(Command("setup"))
+    async def setup_cmd(message: Message):
+        u = await _user(message)
+        if not _is_owner(u):
+            await message.answer("Настройку профиля запускает руководитель компании.")
+            return
+
+        loop = asyncio.get_event_loop()
+        existing = await loop.run_in_executor(None, niche_loader.active_profile, u["company_id"])
+        warn = ("\n\n_У вас уже настроен профиль. Новый заменит его, "
+                "старый останется в истории._" if existing else "")
+
+        q = brief.start(message.from_user.id, u["company_id"])
+        await message.answer(
+            f"*Настройка под ваш бизнес*\n\n"
+            f"Восемь вопросов, примерно пять минут. По вашим ответам бот соберёт "
+            f"портреты клиентов и их запросы — и дальше будет играть именно ваших "
+            f"покупателей, а не абстрактных.\n\n"
+            f"Отвечайте развёрнуто: чем подробнее, тем достовернее тренировка.\n"
+            f"«назад» — вернуться на шаг, /cancel — выйти.{warn}",
+            parse_mode="Markdown",
+        )
+        await _ask(message, q)
+
+    @dp.message(Command("cancel"))
+    async def cancel_cmd(message: Message):
+        if brief.cancel(message.from_user.id):
+            await message.answer("Настройка отменена. Запустить заново — /setup")
+        else:
+            await message.answer("Нечего отменять.")
+
+    @dp.message(F.text & ~F.text.startswith("/"), _in_brief)
+    async def brief_answer(message: Message):
+        uid = message.from_user.id
+        u = await _user(message)
+        w = brief.WIZARDS.get(uid)
+
+        # Владелец нажал «Переделать» и теперь пишет замечание
+        if w and w.get("awaiting_remark"):
+            w["awaiting_remark"] = False
+            await _build_profile(message, u, remark=message.text)
+            return
+
+        if message.text.strip().lower() in ("назад", "back"):
+            q = brief.back(uid)
+            if not q:
+                await message.answer("Это первый вопрос, назад некуда.")
+                return
+            await _ask(message, q)
+            return
+
+        q, err, done = brief.submit_answer(uid, message.text)
+        if err:
+            await message.answer(f"⚠️ {err}")
+            return
+        if done:
+            await _build_profile(message, u)
+            return
+        await _ask(message, q)
+
+    @dp.message((F.photo | F.voice | F.audio), _in_brief)
+    async def brief_wrong_input(message: Message):
+        await message.answer("Сейчас идёт настройка — ответьте, пожалуйста, текстом.")
+
+    @dp.callback_query(F.data == "brief_ok")
+    async def brief_ok_cb(callback: CallbackQuery):
+        uid = callback.from_user.id
+        loop = asyncio.get_event_loop()
+        u = await loop.run_in_executor(None, tenancy.get_user, uid)
+        if not u:
+            await callback.answer()
+            return
+
+        version, err = brief.confirm(uid)
+        if err:
+            await callback.message.answer(f"⚠️ {err}")
+            await callback.answer()
+            return
+
+        await loop.run_in_executor(None, tenancy.set_status, u["company_id"], tenancy.STATUS_ACTIVE)
+        me = await bot.get_me()
+        link = f"https://t.me/{me.username}?start=join_{u['invite_code']}"
+        await callback.message.answer(
+            f"✅ *Профиль сохранён* (версия {version}). Компания готова к работе.\n\n"
+            f"Осталось позвать менеджеров — отправьте им эту ссылку:\n{link}\n\n"
+            f"Свободных мест: *{u['seats'] - tenancy.seats_taken(u['company_id'])}* из {u['seats']}.\n\n"
+            f"Сами можете попробовать прямо сейчас — кнопка «🎯 Тренажёр» внизу.",
+            parse_mode="Markdown", disable_web_page_preview=True,
+            reply_markup=main_reply_kb(True),
+        )
+        await callback.answer("Готово")
+
+    @dp.callback_query(F.data == "brief_redo")
+    async def brief_redo_cb(callback: CallbackQuery):
+        uid = callback.from_user.id
+        w = brief.WIZARDS.get(uid)
+        if not w:
+            await callback.answer("Черновик уже неактуален, запустите /setup", show_alert=True)
+            return
+        w["awaiting_remark"] = True
+        await callback.message.answer(
+            "Что поправить? Напишите замечание одним сообщением — "
+            "например «добавь корпоративных клиентов» или «убери частных лиц, "
+            "мы работаем только с бизнесом»."
+        )
+        await callback.answer()
 
     # ---------- Сценарии ----------
 
