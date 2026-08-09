@@ -13,6 +13,8 @@ MOSS SALE — точка входа.
   TRAINER_MODEL       — модель диалога, по умолчанию claude-sonnet-5
   DEBRIEF_MODEL       — модель разбора, по умолчанию claude-opus-5
   ADMIN_IDS           — telegram_id владельца продукта, через запятую
+  VOICE_CLIENT_CHANCE — доля голосовых от клиента в тренажёре, 0..1 (по умолчанию 0)
+  LONG_MESSAGE_CHARS  — с какой длины сообщение менеджера считается простынёй (420)
 """
 
 import os
@@ -110,11 +112,6 @@ async def guard(message: Message):
     return u
 
 
-# --- Тренажёр регистрируется ПЕРВЫМ: при активной тренировке его хендлеры
-# --- должны перехватывать текст раньше консультанта.
-register_trainer(dp, bot, client)
-
-
 def get_history(user_id):
     return conversations.setdefault(user_id, [])
 
@@ -164,19 +161,19 @@ async def transcribe_voice(file_bytes: bytes) -> str:
         os.unlink(path)
 
 
-def _tts_sync(text: str) -> bytes:
+def _tts_sync(text: str, voice: str = "onyx") -> bytes:
     clean = text
     for ch in ("**", "*", "#", "`", "_"):
         clean = clean.replace(ch, "")
-    resp = openai_sync.audio.speech.create(model="tts-1", voice="onyx", input=clean[:2000])
+    resp = openai_sync.audio.speech.create(model="tts-1", voice=voice, input=clean[:2000])
     buf = io.BytesIO()
     for chunk in resp.iter_bytes():
         buf.write(chunk)
     return buf.getvalue()
 
 
-async def text_to_speech(text: str) -> bytes:
-    return await asyncio.get_event_loop().run_in_executor(None, _tts_sync, text)
+async def text_to_speech(text: str, voice: str = "onyx") -> bytes:
+    return await asyncio.get_event_loop().run_in_executor(None, _tts_sync, text, voice)
 
 
 async def send_answer(user_id: int, text: str, with_voice: bool = False):
@@ -189,6 +186,12 @@ async def send_answer(user_id: int, text: str, with_voice: bool = False):
             await bot.send_voice(user_id, BufferedInputFile(audio, filename="answer.mp3"))
         except Exception as e:
             log.warning("Голос недоступен: %s", e)
+
+
+# --- Тренажёр регистрируется ДО хендлеров консультанта: при активной
+# --- тренировке его хендлеры должны перехватывать текст первыми.
+# Голос передаём только если есть ключ OpenAI — без него клиент пишет текстом.
+register_trainer(dp, bot, client, tts=text_to_speech if openai_sync else None)
 
 
 # --- Вход по ссылке ---------------------------------------------------------

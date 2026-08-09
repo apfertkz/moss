@@ -20,6 +20,8 @@ import asyncio
 import csv
 import io
 import logging
+import os
+import random
 
 from aiogram import F
 from aiogram.types import (
@@ -28,7 +30,7 @@ from aiogram.types import (
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from . import engine, stats, tenancy, niche_loader, brief
+from . import engine, stats, tenancy, niche_loader, brief, persona
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,10 @@ BTN_NEW = "🎯 Новый клиент"
 BTN_STATS = "📊 Статистика"
 BTN_EXIT = "🚪 Выйти"
 BTN_TEAM = "👥 Отдел"
+
+# Нижняя клавиатура видна и во время настройки. Её нажатия приходят обычным
+# текстом, поэтому мастер брифа обязан их узнавать, а не принимать за ответ.
+BUTTON_LABELS = {BTN_TRAINER, BTN_NEW, BTN_STATS, BTN_EXIT, BTN_TEAM}
 
 
 def main_reply_kb(is_owner=False):
@@ -71,8 +77,68 @@ def _in_brief(message: Message) -> bool:
     return brief.is_active(message.from_user.id)
 
 
-def register_trainer(dp, bot, client):
-    """Регистрирует хендлеры тренажёра."""
+async def safe_answer(message: Message, text, **kw):
+    """
+    Отправить сообщение, не рискуя молчанием.
+
+    Telegram отклоняет сообщение целиком, если разметка Markdown битая —
+    достаточно одной звёздочки или подчёркивания в тексте, который написала
+    модель. Исключение улетает из хендлера, и пользователь не получает НИЧЕГО.
+    Поэтому при отказе повторяем тем же текстом, но без разметки.
+    """
+    try:
+        return await message.answer(text, **kw)
+    except Exception as e:
+        if "parse" not in str(e).lower() and "entit" not in str(e).lower():
+            raise
+        log.warning("Разметка не принята Telegram, шлю без неё: %s", e)
+        kw.pop("parse_mode", None)
+        return await message.answer(text, **kw)
+
+
+def register_trainer(dp, bot, client, tts=None):
+    """
+    Регистрирует хендлеры тренажёра.
+
+    tts — необязательная асинхронная функция (text, voice) -> bytes.
+    Если передана и включён VOICE_CLIENT_CHANCE, клиент иногда присылает
+    голосовое вместо текста. В переписке с реальными клиентами голосовые
+    приходят постоянно, и менеджер должен уметь с ними работать.
+    """
+
+    voice_chance = float(os.environ.get("VOICE_CLIENT_CHANCE", "0"))
+
+    async def _send_bubbles(message: Message, texts, scenario=None, allow_voice=True):
+        """
+        Отправить реплики клиента так, как это делает живой человек:
+        несколькими короткими сообщениями, с индикатором «печатает» и
+        паузой, соразмерной длине. Мгновенный ответ единым абзацем —
+        главный признак, по которому тренажёр узнаётся как машина.
+        """
+        uid = message.from_user.id
+        for i, t in enumerate(texts):
+            if not t:
+                continue
+            delay = min(3.5, 0.7 + len(t) / 45)
+            try:
+                await bot.send_chat_action(uid, "typing")
+            except Exception:
+                pass
+            await asyncio.sleep(delay)
+
+            as_voice = (
+                allow_voice and tts and scenario and voice_chance > 0
+                and len(t) > 25 and random.random() < voice_chance
+            )
+            if as_voice:
+                try:
+                    await bot.send_chat_action(uid, "record_voice")
+                    audio = await tts(t, persona.voice_name(scenario["persona"]))
+                    await bot.send_voice(uid, BufferedInputFile(audio, filename="voice.ogg"))
+                    continue
+                except Exception:
+                    log.warning("Голосовое не отправилось, шлю текстом", exc_info=True)
+            await message.answer(t)
 
     async def _user(message: Message):
         """Достать пользователя из базы. None — если не привязан к компании."""
@@ -111,20 +177,41 @@ def register_trainer(dp, bot, client):
     async def _build_profile(message: Message, u, remark=None):
         uid = message.from_user.id
         loop = asyncio.get_event_loop()
-        await message.answer("Собираю профиль вашей ниши — это займёт полминуты…")
+        await message.answer(
+            "Собираю профиль вашей ниши. Обычно это минута-полторы, "
+            "иногда до трёх — если с первого раза выйдет слабо, пересоберу сам.\n\n"
+            "_Просто дождитесь ответа, писать ничего не нужно._",
+            parse_mode="Markdown")
         await bot.send_chat_action(uid, "typing")
 
-        profile, err, usage = await loop.run_in_executor(
-            None, brief.generate, client, uid, remark)
+        # Всё внутри — под защитой: если здесь что-то упадёт, владелец
+        # останется без единого сообщения и решит, что бот умер.
+        try:
+            profile, err, usage = await loop.run_in_executor(
+                None, brief.generate, client, uid, remark)
+        except Exception:
+            log.exception("Сборка профиля упала")
+            w = brief.WIZARDS.get(uid)
+            if w:
+                w["generating"] = False
+            await message.answer(
+                "⚠️ Не получилось собрать профиль — что-то сломалось на нашей стороне.\n"
+                "Наберите /setup, чтобы попробовать заново.")
+            return
 
         if usage:
-            await loop.run_in_executor(None, stats.record_usage, u["company_id"], uid,
-                                       "brief", brief.MODEL, usage)
+            try:
+                await loop.run_in_executor(None, stats.record_usage, u["company_id"], uid,
+                                           "brief", brief.MODEL, usage)
+            except Exception:
+                log.exception("Не удалось записать расход по брифу")
+
         if err:
             await message.answer(f"⚠️ {err}")
             return
 
-        await message.answer(
+        await safe_answer(
+            message,
             "Вот что получилось. Проверьте — по этому описанию бот будет "
             "играть ваших клиентов.\n\n" + niche_loader.describe(profile),
             parse_mode="Markdown", reply_markup=_draft_kb(),
@@ -164,16 +251,38 @@ def register_trainer(dp, bot, client):
     @dp.message(F.text & ~F.text.startswith("/"), _in_brief)
     async def brief_answer(message: Message):
         uid = message.from_user.id
-        u = await _user(message)
+        text = (message.text or "").strip()
         w = brief.WIZARDS.get(uid)
-
-        # Владелец нажал «Переделать» и теперь пишет замечание
-        if w and w.get("awaiting_remark"):
-            w["awaiting_remark"] = False
-            await _build_profile(message, u, remark=message.text)
+        if not w:
             return
 
-        if message.text.strip().lower() in ("назад", "back"):
+        # 1. Профиль сейчас собирается — принимать ответы нельзя.
+        if brief.is_generating(uid):
+            await message.answer("Профиль ещё собирается — секунду, я допишу.")
+            return
+
+        # 2. Нажатие нижней кнопки. Это не ответ на вопрос: раньше такой
+        #    текст уходил в мастер и ронял его.
+        if text in BUTTON_LABELS:
+            await message.answer(
+                "Сейчас идёт настройка профиля. Закончите её или наберите /cancel — "
+                "тогда кнопки снова заработают.")
+            return
+
+        # 3. Владелец нажал «Переделать» и пишет замечание.
+        if w.get("awaiting_remark"):
+            w["awaiting_remark"] = False
+            await _build_profile(message, await _user(message), remark=text)
+            return
+
+        # 4. Черновик готов, ждём решения по кнопкам под ним.
+        if brief.awaiting_confirmation(uid):
+            await message.answer(
+                "Профиль собран — нажмите «✅ Подходит» или «🔁 Переделать» "
+                "под сообщением выше. Начать настройку заново — /setup.")
+            return
+
+        if text.lower() in ("назад", "back"):
             q = brief.back(uid)
             if not q:
                 await message.answer("Это первый вопрос, назад некуда.")
@@ -181,12 +290,12 @@ def register_trainer(dp, bot, client):
             await _ask(message, q)
             return
 
-        q, err, done = brief.submit_answer(uid, message.text)
+        q, err, done = brief.submit_answer(uid, text)
         if err:
             await message.answer(f"⚠️ {err}")
             return
         if done:
-            await _build_profile(message, u)
+            await _build_profile(message, await _user(message))
             return
         await _ask(message, q)
 
@@ -270,25 +379,26 @@ def register_trainer(dp, bot, client):
         scenario = engine.new_scenario(profile)
         session = {"scenario": scenario, "profile": profile,
                    "transcript": [], "turns": 0,
+                   "silences": 0, "awaiting_followup": False, "last_silence_hours": 0,
                    "usage": {"input_tokens": 0, "output_tokens": 0, "cache_write": 0, "cache_read": 0}}
         SESSIONS[uid] = session
 
         await message.answer(engine.scenario_intro(scenario),
                              parse_mode="Markdown", reply_markup=trainer_reply_kb())
-        await bot.send_chat_action(uid, "typing")
         try:
             opening, usage = await loop.run_in_executor(
                 None, engine.opening_message, client, scenario, profile)
         except Exception:
             log.exception("Ошибка первого сообщения")
-            opening, usage = scenario["request"], None
+            opening, usage = [scenario["request"]], None
 
         if usage:
             session["usage"] = {k: session["usage"][k] + usage[k] for k in session["usage"]}
             await loop.run_in_executor(None, stats.record_usage, u["company_id"], uid,
                                        "opening", engine.DIALOG_MODEL, usage)
-        session["transcript"].append(("buyer", opening))
-        await message.answer(f"💬 {opening}")
+        for t in opening:
+            session["transcript"].append(("buyer", t))
+        await _send_bubbles(message, opening, scenario)
 
     async def do_stats(message: Message, u):
         if not u:
@@ -424,7 +534,7 @@ def register_trainer(dp, bot, client):
         if not profile:
             await message.answer("Профиль ещё не настроен. Заполните бриф — /setup.")
             return
-        await message.answer(niche_loader.describe(profile), parse_mode="Markdown")
+        await safe_answer(message, niche_loader.describe(profile), parse_mode="Markdown")
 
     @dp.message(Command("export"))
     async def export_cmd(message: Message):
@@ -470,15 +580,15 @@ def register_trainer(dp, bot, client):
             return
 
         loop = asyncio.get_event_loop()
-        scenario, profile = session["scenario"], session["profile"]
+        scenario = session["scenario"]
         session["transcript"].append(("manager", message.text))
         session["turns"] += 1
+        was_followup = session.get("awaiting_followup", False)
 
         await bot.send_chat_action(uid, "typing")
         try:
             result = await loop.run_in_executor(
-                None, engine.step, client, scenario, profile,
-                session["transcript"], message.text)
+                None, engine.step, client, session, message.text)
         except Exception:
             log.exception("Ошибка хода тренажёра")
             await message.answer("⚠️ Тренажёр споткнулся. Напиши сообщение ещё раз.")
@@ -490,34 +600,65 @@ def register_trainer(dp, bot, client):
             await loop.run_in_executor(None, stats.record_usage, u["company_id"], uid,
                                        "step", engine.DIALOG_MODEL, usage)
 
-        buyer_reply = result["buyer_reply"]
         state = result["deal_state"]
-        session["transcript"].append(("buyer", buyer_reply))
+        msgs = result["buyer_messages"]
+
+        # Клиент пропал. Реального ожидания нет — только пометка, чтобы
+        # тренировка не прерывалась, а решение принимать всё равно пришлось.
+        if state == "silent":
+            session["silences"] = session.get("silences", 0) + 1
+            session["awaiting_followup"] = True
+            session["last_silence_hours"] = result["silence_hours"]
+            session["transcript"].append(
+                ("system", f"(клиент не отвечает {result['silence_hours']} ч.)"))
+
+            if session["silences"] > engine.MAX_SILENCES:
+                SESSIONS.pop(uid, None)
+                await message.answer(
+                    "⏳ *Клиент перестал отвечать окончательно.*", parse_mode="Markdown")
+                await _finish(message, u, session, "failed", None)
+                return
+
+            await asyncio.sleep(1.2)
+            await safe_answer(message, engine.silence_marker(result["silence_hours"]),
+                              parse_mode="Markdown")
+            return
+
+        session["awaiting_followup"] = False
+        for t in msgs:
+            session["transcript"].append(("buyer", t))
 
         if state in ("won", "failed"):
             SESSIONS.pop(uid, None)
-            await _finish(message, u, session, state, buyer_reply)
-        elif state == "yellow":
-            await message.answer(
-                f"💬 {buyer_reply}\n\n🟡 _Клиент засомневался — вернись в алгоритм, это последний шанс._",
-                parse_mode="Markdown")
-        else:
-            await message.answer(f"💬 {buyer_reply}")
+            await _send_bubbles(message, msgs, scenario)
+            await _finish(message, u, session, state, None)
+            return
 
-    async def _finish(message, u, session, state, buyer_reply):
+        await _send_bubbles(message, msgs, scenario)
+
+        if was_followup and state == "active":
+            await safe_answer(message, "_Клиент вернулся — дожим сработал._",
+                              parse_mode="Markdown")
+        elif state == "yellow":
+            await safe_answer(
+                message,
+                "🟡 _Клиент засомневался — вернись в алгоритм, это последний шанс._",
+                parse_mode="Markdown")
+
+    async def _finish(message, u, session, state, buyer_reply=None):
         """Завершение тренировки: вердикт, разбор на сильной модели, списание, статистика."""
         uid = message.from_user.id
         loop = asyncio.get_event_loop()
 
         head = ("✅ *СДЕЛКА ЗАКРЫТА!* Клиент согласился."
                 if state == "won" else
-                "❌ *СДЕЛКА ПРОВАЛЕНА.* Клиент передумал.")
-        await message.answer(f"💬 {buyer_reply}\n\n{head}", parse_mode="Markdown")
+                "❌ *СДЕЛКА ПРОВАЛЕНА.*")
+        prefix = f"💬 {buyer_reply}\n\n" if buyer_reply else ""
+        await safe_answer(message, prefix + head, parse_mode="Markdown")
 
         await bot.send_chat_action(uid, "typing")
         debrief, usage = await loop.run_in_executor(
-            None, engine.final_debrief, client, session["scenario"],
-            session["profile"], session["transcript"], state)
+            None, engine.final_debrief, client, session, state)
         if usage:
             await loop.run_in_executor(None, stats.record_usage, u["company_id"], uid,
                                        "debrief", engine.DEBRIEF_MODEL, usage)
@@ -527,7 +668,7 @@ def register_trainer(dp, bot, client):
         used, limit = await loop.run_in_executor(None, tenancy.consume_session, u["company_id"])
 
         if debrief:
-            await message.answer(f"🧠 *Разбор*\n\n{debrief}", parse_mode="Markdown")
+            await safe_answer(message, f"🧠 *Разбор*\n\n{debrief}", parse_mode="Markdown")
 
         warn = tenancy.usage_warning(used, limit)
         tail = "\n\n" + warn if warn else ""

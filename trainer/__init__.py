@@ -12,6 +12,7 @@ telegram_id пользователя, профиль ниши и статист�
   niche_loader— профили ниш в базе, валидация схемы
   brief       — мастер брифа: восемь вопросов → профиль ниши
   engine      — движок диалога: покупатель + скрытая оценка + разбор
+  persona     — живой человек поверх психотипа: имя, настроение, манера письма
   psychotypes — пять психотипов по спиральной динамике
   algorithm   — эталонный алгоритм продажи по Гребенюку
   stats       — статистика по менеджеру и по отделу, учёт расхода
@@ -20,9 +21,10 @@ telegram_id пользователя, профиль ниши и статист�
 """
 
 from .handlers import register_trainer, main_reply_kb, trainer_reply_kb
-from . import db, tenancy, onboarding, niche_loader, stats, engine, costs, brief
+from . import db, tenancy, onboarding, niche_loader, stats, engine, costs, brief, persona
 
 __all__ = [
     "register_trainer", "main_reply_kb", "trainer_reply_kb",
     "db", "tenancy", "onboarding", "niche_loader", "stats", "engine", "costs", "brief",
+    "persona",
 ]

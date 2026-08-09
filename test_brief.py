@@ -177,11 +177,67 @@ def main():
           "только с бизнесом" in client._calls[0]["messages"][0]["content"])
     brief.cancel(UID)
 
+    test_regression()
+
+
+
+
+def test_regression():
+    """
+    Отдельный прогон: сообщения, приходящие ПОСЛЕ последнего вопроса.
+    Именно здесь бот замолкал целиком — QUESTIONS[8] бросал IndexError,
+    хендлер падал, и Telegram не получал ничего.
+    """
+    print("\n8. Сообщения после последнего вопроса (регресс)")
+    with db.connection() as c:
+        c.execute("DELETE FROM niche_profiles; DELETE FROM users; DELETE FROM companies")
+    company = t.create_company("Регресс", plan="team")
+    t.attach_user(99, company["id"], t.ROLE_OWNER, "Владелец")
+    UID = 99
+
+    brief.start(UID, company["id"])
+    fill(UID)
+    check("после последнего ответа мастер ждёт подтверждения",
+          brief.awaiting_confirmation(UID))
+
+    for probe in ("👥 Отдел", "🎯 Тренажёр", "📊 Статистика", "что там", "назад"):
+        try:
+            q, err, done = brief.submit_answer(UID, probe)
+            ok = True
+        except Exception as e:
+            ok = False
+            print(f"      {type(e).__name__} на «{probe}»")
+        check(f"не падает на «{probe}»", ok)
+
+    client = fake_client([json.dumps(good_profile(), ensure_ascii=False)])
+    check("во время сборки флаг не выставлен заранее", not brief.is_generating(UID))
+    profile, err, _ = brief.generate(client, UID)
+    check("профиль собрался", profile is not None, err)
+    check("после сборки флаг снят", not brief.is_generating(UID))
+
+    print("\n9. Модель вернула мусор неожиданной структуры")
+    brief.start(UID, company["id"]); fill(UID)
+    broken = good_profile()
+    broken["statuses"] = ["просто строка", "и ещё одна", 42]
+    client = fake_client([json.dumps(broken, ensure_ascii=False),
+                          json.dumps(broken, ensure_ascii=False),
+                          json.dumps(good_profile(), ensure_ascii=False)])
+    try:
+        profile, err, _ = brief.generate(client, UID)
+        crashed = False
+    except Exception as e:
+        crashed = True
+        print(f"      {type(e).__name__}: {e}")
+    check("кривая структура не роняет мастер", crashed is False)
+    check("с третьей попытки собирается", not crashed and profile is not None)
+    check("флаг снят и после ошибок", not brief.is_generating(UID))
+    brief.cancel(UID)
+
     print("\n" + "=" * 58)
     if FAILS:
         print(f"ПРОВАЛЕНО {len(FAILS)}: " + "; ".join(FAILS))
         sys.exit(1)
-    print("Все проверки пройдены.")
+    print("Регрессионные проверки пройдены.")
 
 
 if __name__ == "__main__":

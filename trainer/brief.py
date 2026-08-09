@@ -24,6 +24,11 @@ log = logging.getLogger(__name__)
 MODEL = "claude-opus-5"   # профиль пишется один раз на компанию — берём лучшую модель
 MAX_ATTEMPTS = 3
 
+# Жёсткий предел на один вызов. Без него зависший запрос держит мастер
+# минутами: у SDK таймаут по умолчанию — десять минут, и всё это время
+# владелец видит «собираю профиль…» и думает, что бот умер.
+REQUEST_TIMEOUT = 120.0
+
 # telegram_id -> {"company_id", "step", "answers": {...}, "draft": {...}}
 WIZARDS = {}
 
@@ -182,6 +187,17 @@ def back(telegram_id):
     return q
 
 
+def awaiting_confirmation(telegram_id):
+    """Все вопросы отвечены — мастер ждёт решения по черновику."""
+    w = WIZARDS.get(telegram_id)
+    return bool(w) and w["step"] >= len(QUESTIONS)
+
+
+def is_generating(telegram_id):
+    w = WIZARDS.get(telegram_id)
+    return bool(w) and w.get("generating", False)
+
+
 def submit_answer(telegram_id, text):
     """
     Принять ответ. Возвращает (следующий_вопрос, ошибка, готово).
@@ -190,6 +206,12 @@ def submit_answer(telegram_id, text):
     w = WIZARDS.get(telegram_id)
     if not w:
         return None, "Мастер не запущен. Наберите /setup.", False
+
+    # Страховка: после последнего вопроса мастер остаётся активным, пока
+    # владелец не подтвердит профиль. Любое сообщение в этот момент раньше
+    # обращалось к QUESTIONS[8] и роняло хендлер — бот замолкал целиком.
+    if w["step"] >= len(QUESTIONS):
+        return None, None, True
 
     q = QUESTIONS[w["step"]]
     answer = (text or "").strip()
@@ -249,6 +271,16 @@ def generate(client, telegram_id, remark=None):
 
     total_usage = {"input_tokens": 0, "output_tokens": 0, "cache_write": 0, "cache_read": 0}
     last_error = None
+    w["generating"] = True
+
+    try:
+        return _generate_loop(client, w, user_content, total_usage)
+    finally:
+        w["generating"] = False
+
+
+def _generate_loop(client, w, user_content, total_usage):
+    last_error = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
@@ -257,10 +289,20 @@ def generate(client, telegram_id, remark=None):
                 max_tokens=4000,
                 system=GENERATOR_SYSTEM,
                 messages=[{"role": "user", "content": user_content}],
+                timeout=REQUEST_TIMEOUT,
             )
-        except Exception as e:
+        except TypeError:
+            # Заглушки в тестах не знают про timeout — повторяем без него.
+            resp = client.messages.create(
+                model=MODEL,
+                max_tokens=4000,
+                system=GENERATOR_SYSTEM,
+                messages=[{"role": "user", "content": user_content}],
+            )
+        except Exception:
             log.exception("Ошибка обращения к модели при генерации профиля")
-            return None, "Не удалось связаться с моделью. Попробуйте ещё раз через минуту.", total_usage
+            return None, ("Модель не ответила вовремя. Наберите /setup ещё раз — "
+                          "ответы придётся ввести заново."), total_usage
 
         total_usage = costs.add(total_usage, costs.usage_dict(resp))
         raw = resp.content[0].text if resp.content else ""
@@ -291,6 +333,15 @@ def generate(client, telegram_id, remark=None):
             last_error = str(e)
             user_content += f"\n\nПРЕДЫДУЩАЯ ПОПЫТКА не прошла проверку: {e}. Исправь."
             log.warning("Профиль не прошёл валидацию (попытка %s): %s", attempt, e)
+            continue
+        except Exception as e:
+            # Модель может вернуть структуру неожиданного вида — например,
+            # строки вместо объектов в statuses. Валидатор на этом упадёт
+            # не своим исключением; молча ронять мастер нельзя.
+            last_error = f"неожиданная структура ответа ({type(e).__name__})"
+            user_content += ("\n\nПРЕДЫДУЩАЯ ПОПЫТКА имела неверную структуру. "
+                            "Строго соблюдай формат полей.")
+            log.warning("Профиль неожиданной структуры (попытка %s): %s", attempt, e)
             continue
 
         w["draft"] = data
