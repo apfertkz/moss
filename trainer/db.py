@@ -172,7 +172,40 @@ CREATE TABLE IF NOT EXISTS usage_log (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_usage_company_date ON usage_log(company_id, created_at);
+
+-- Активные тренировки. Раньше жили в памяти процесса: любой деплой обрывал
+-- диалог молча, менеджер писал в пустоту. Теперь переживают перезапуск.
+CREATE TABLE IF NOT EXISTS active_sessions (
+    telegram_id BIGINT      PRIMARY KEY,
+    company_id  BIGINT      NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    data        JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_active_sessions_company ON active_sessions(company_id);
+
+-- Журнал изменений: кто, что и над кем сделал. Нужен и для разбора
+-- «я не трогал», и чтобы видеть историю клиента в его карточке.
+CREATE TABLE IF NOT EXISTS admin_log (
+    id          BIGSERIAL   PRIMARY KEY,
+    actor       TEXT        NOT NULL,
+    action      TEXT        NOT NULL,
+    company_id  BIGINT      REFERENCES companies(id) ON DELETE SET NULL,
+    telegram_id BIGINT,
+    details     JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_log_company ON admin_log(company_id, created_at DESC);
+
+-- Что уже напомнили клиенту, чтобы не слать одно и то же каждый день.
+CREATE TABLE IF NOT EXISTS reminders_sent (
+    company_id BIGINT      NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    kind       TEXT        NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL,
+    sent_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (company_id, kind, period_end)
+);
 """
+
 
 
 def init_db():

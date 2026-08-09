@@ -31,7 +31,7 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from trainer import register_trainer, main_reply_kb, db, tenancy, onboarding, stats, guide, demo
+from trainer import register_trainer, main_reply_kb, db, tenancy, onboarding, stats, guide, demo, notify
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -520,6 +520,12 @@ async def main():
     me = await bot.get_me()
     log.info("Бот @%s запущен", me.username)
     await asyncio.get_event_loop().run_in_executor(None, check_models)
+
+    # Фоновая проверка подписок и уборка брошенных тренировок.
+    # Живёт рядом с опросом Telegram, отдельного планировщика не нужно.
+    asyncio.create_task(notify.loop(bot))
+
+    await notify.admin(bot, f"🟢 Бот @{me.username} поднялся", quiet=True)
     await dp.start_polling(bot)
 
 

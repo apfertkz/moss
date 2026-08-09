@@ -30,12 +30,13 @@ from aiogram.types import (
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from . import engine, stats, tenancy, niche_loader, brief, persona, guide, demo
+from . import engine, stats, tenancy, niche_loader, brief, persona, guide, demo, store
 
 log = logging.getLogger(__name__)
 
-# telegram_id -> активная сессия {"scenario","profile","transcript","turns","usage"}
-SESSIONS = {}
+# telegram_id -> активная сессия {"scenario","profile","transcript","turns","usage"}.
+# Хранится в базе: деплой не должен обрывать диалог на середине.
+SESSIONS = store.SessionMap()
 
 BTN_TRAINER = "🎯 Тренажёр"
 BTN_NEW = "🎯 Новый клиент"
@@ -405,6 +406,7 @@ def register_trainer(dp, bot, client, tts=None, stt=None):
 
         scenario = engine.new_scenario(profile)
         session = {"scenario": scenario, "profile": profile,
+                   "company_id": u["company_id"],
                    "transcript": [], "turns": 0,
                    "silences": 0, "awaiting_followup": False, "last_silence_hours": 0,
                    "usage": {"input_tokens": 0, "output_tokens": 0, "cache_write": 0, "cache_read": 0}}
@@ -726,6 +728,7 @@ def register_trainer(dp, bot, client, tts=None, stt=None):
 
         state = result["deal_state"]
         msgs = result["buyer_messages"]
+        SESSIONS.save(uid, session)
 
         # Клиент пропал. Реального ожидания нет — только пометка, чтобы
         # тренировка не прерывалась, а решение принимать всё равно пришлось.

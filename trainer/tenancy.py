@@ -30,6 +30,9 @@ PLANS = {
 }
 DEFAULT_PLAN = "trial"
 
+# Длина оплаченного периода. Счётчик тренировок обнуляется, когда он истёк.
+PERIOD_DAYS = 30
+
 ROLE_OWNER = "owner"
 ROLE_MANAGER = "manager"
 
@@ -118,7 +121,7 @@ def get_user(telegram_id):
     return db.query(
         """SELECT u.*, c.title AS company_title, c.plan, c.status AS company_status,
                   c.seats, c.session_limit, c.sessions_used, c.expires_at,
-                  c.invite_code, c.activation_code
+                  c.period_started_at, c.invite_code, c.activation_code
            FROM users u JOIN companies c ON c.id = u.company_id
            WHERE u.telegram_id = %s""",
         (telegram_id,), one=True,
@@ -195,6 +198,37 @@ class Denied(Exception):
     """Пользователю нельзя начать тренировку. В аргументе — текст для него."""
 
 
+def roll_period_if_due(user):
+    """
+    Начать новый период, если старый истёк.
+
+    Сделано лениво, при первом обращении, а не по расписанию: внешнего
+    планировщика у нас нет, а забытый вызов означал бы, что клиент упёрся
+    в исчерпанный лимит и на второй месяц. Возвращает актуального
+    пользователя — тот же объект либо перечитанный из базы.
+    """
+    started = user.get("period_started_at")
+    if not started:
+        return user
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if (now - started).days < PERIOD_DAYS:
+        return user
+
+    # Подписка кончилась — период не продлеваем, иначе клиент тренируется бесплатно.
+    expires = user.get("expires_at")
+    if expires and expires < now:
+        return user
+
+    db.execute(
+        """UPDATE companies SET sessions_used = 0, period_started_at = now()
+           WHERE id = %s AND period_started_at = %s""",
+        (user["company_id"], started),
+    )
+    log.info("Компания %s: начат новый период", user["company_id"])
+    return get_user(user["telegram_id"]) or user
+
+
 def check_can_train(user):
     """
     Проверка перед стартом тренировки. Бросает Denied с человеческим текстом.
@@ -221,6 +255,8 @@ def check_can_train(user):
     expires = user["expires_at"]
     if expires and expires < datetime.datetime.now(datetime.timezone.utc):
         raise Denied("Срок подписки истёк. Обратитесь к руководителю для продления.")
+
+    user = roll_period_if_due(user)
 
     if user["sessions_used"] >= user["session_limit"]:
         raise Denied(
@@ -259,3 +295,125 @@ def usage_warning(used, limit):
     if limit and used == int(limit * 0.8):
         return f"⚠️ Израсходовано {used} из {limit} тренировок в этом месяце."
     return None
+
+
+# --- Управление подпиской ---------------------------------------------------
+#
+# Всё, что меняет условия клиента, живёт здесь и возвращает обновлённую
+# компанию. Панель и команды бота вызывают эти функции, а не пишут в базу
+# напрямую — иначе изменения расползутся по коду и журнал перестанет быть полным.
+
+def extend(company_id, days=PERIOD_DAYS, reset_usage=True):
+    """
+    Продлить подписку. По умолчанию заодно начинает новый период:
+    клиент заплатил — счётчик тренировок должен обнулиться.
+
+    Срок считается от большей из двух дат: текущего окончания или сегодня.
+    Иначе продление просроченной подписки съедало бы дни простоя.
+    """
+    return db.execute(
+        """UPDATE companies
+              SET expires_at = GREATEST(COALESCE(expires_at, now()), now())
+                               + (%s || ' days')::interval,
+                  status = CASE WHEN status = %s THEN %s ELSE status END,
+                  sessions_used = CASE WHEN %s THEN 0 ELSE sessions_used END,
+                  period_started_at = CASE WHEN %s THEN now() ELSE period_started_at END
+            WHERE id = %s
+        RETURNING *""",
+        (str(days), STATUS_SUSPENDED, STATUS_ACTIVE, reset_usage, reset_usage, company_id),
+        returning=True,
+    )
+
+
+def change_plan(company_id, plan):
+    """
+    Перевести на другой тариф: меняются и места, и лимит тренировок.
+
+    Использованное не обнуляем — клиент мог перейти в середине месяца,
+    и обнуление подарило бы ему второй лимит.
+    """
+    if plan not in PLANS:
+        raise ValueError(f"Неизвестный тариф: {plan}")
+    p = PLANS[plan]
+    return db.execute(
+        """UPDATE companies SET plan=%s, seats=%s, session_limit=%s
+            WHERE id=%s RETURNING *""",
+        (plan, p["seats"], p["session_limit"], company_id), returning=True,
+    )
+
+
+def add_seats(company_id, n):
+    """Добавить или убрать места. В минус не уходим."""
+    return db.execute(
+        "UPDATE companies SET seats = GREATEST(1, seats + %s) WHERE id=%s RETURNING *",
+        (n, company_id), returning=True,
+    )
+
+
+def add_sessions(company_id, n):
+    """Докупленный пакет тренировок: поднимаем потолок текущего периода."""
+    return db.execute(
+        """UPDATE companies SET session_limit = GREATEST(0, session_limit + %s)
+            WHERE id=%s RETURNING *""",
+        (n, company_id), returning=True,
+    )
+
+
+def suspend(company_id):
+    return set_status(company_id, STATUS_SUSPENDED)
+
+
+def resume(company_id):
+    return set_status(company_id, STATUS_ACTIVE)
+
+
+def days_left(company):
+    """Сколько дней осталось. None — если срок не задан, 0 — если истёк."""
+    expires = company.get("expires_at")
+    if not expires:
+        return None
+    delta = expires - datetime.datetime.now(datetime.timezone.utc)
+    return max(0, delta.days)
+
+
+def expiring(days=7):
+    """Компании, у которых подписка кончается в ближайшие N дней."""
+    return db.query(
+        """SELECT * FROM companies
+            WHERE status <> %s
+              AND expires_at IS NOT NULL
+              AND expires_at BETWEEN now() AND now() + (%s || ' days')::interval
+         ORDER BY expires_at""",
+        (STATUS_SUSPENDED, str(days)),
+    )
+
+
+def owner_of(company_id):
+    return db.query(
+        "SELECT * FROM users WHERE company_id=%s AND role=%s LIMIT 1",
+        (company_id, ROLE_OWNER), one=True,
+    )
+
+
+# --- Журнал действий --------------------------------------------------------
+
+def log_action(actor, action, company_id=None, telegram_id=None, details=None):
+    """
+    Записать изменение. Пишем всегда, даже если действие сделано из бота:
+    в карточке клиента должна быть видна вся история, а не половина.
+    """
+    import json
+    db.execute(
+        """INSERT INTO admin_log (actor, action, company_id, telegram_id, details)
+           VALUES (%s,%s,%s,%s,%s)""",
+        (str(actor), action, company_id, telegram_id,
+         json.dumps(details, ensure_ascii=False) if details else None),
+    )
+
+
+def history(company_id, limit=50):
+    return db.query(
+        """SELECT * FROM admin_log WHERE company_id=%s
+         ORDER BY created_at DESC LIMIT %s""",
+        (company_id, limit),
+    )

@@ -17,7 +17,7 @@ import json
 import logging
 import re
 
-from . import niche_loader, costs
+from . import niche_loader, costs, llm
 
 log = logging.getLogger(__name__)
 
@@ -284,7 +284,7 @@ def _generate_loop(client, w, user_content, total_usage):
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            resp = client.messages.create(
+            resp = llm.create(client,
                 model=MODEL,
                 max_tokens=4000,
                 system=GENERATOR_SYSTEM,
@@ -293,7 +293,7 @@ def _generate_loop(client, w, user_content, total_usage):
             )
         except TypeError:
             # Заглушки в тестах не знают про timeout — повторяем без него.
-            resp = client.messages.create(
+            resp = llm.create(client,
                 model=MODEL,
                 max_tokens=4000,
                 system=GENERATOR_SYSTEM,

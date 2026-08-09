@@ -31,7 +31,7 @@ import logging
 
 from .psychotypes import PSYCHOTYPES, get_psychotype
 from .algorithm import algorithm_brief, REQUIRED_STAGES
-from . import costs, persona as persona_mod
+from . import costs, persona as persona_mod, llm
 
 log = logging.getLogger(__name__)
 
@@ -302,7 +302,7 @@ def opening_message(client, scenario, profile):
         f"(одно-два коротких сообщения), deal_state = \"active\", stage = \"contact\"."
     )
     try:
-        resp = client.messages.create(
+        resp = llm.create(client,
             model=DIALOG_MODEL,
             max_tokens=400,
             system=_system_blocks(scenario, profile),
@@ -355,7 +355,7 @@ def step(client, session, manager_message):
     parts.append(f"НОВОЕ СООБЩЕНИЕ МЕНЕДЖЕРА:\n{manager_message}")
     parts.append("Ответь строго JSON по формату.")
 
-    resp = client.messages.create(
+    resp = llm.create(client,
         model=DIALOG_MODEL,
         max_tokens=800,
         system=_system_blocks(scenario, profile),
@@ -453,7 +453,7 @@ def final_debrief(client, session, result):
         f"СТЕНОГРАММА:\n{_transcript_text(session['transcript'])}"
     )
     try:
-        resp = client.messages.create(
+        resp = llm.create(client,
             model=DEBRIEF_MODEL,
             max_tokens=900,
             system=DEBRIEF_SYSTEM,
