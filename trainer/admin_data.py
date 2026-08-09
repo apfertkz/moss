@@ -1,0 +1,503 @@
+# -*- coding: utf-8 -*-
+"""
+Данные для админ-панели: чтение сводок и списков.
+
+Отдельно от веб-слоя намеренно. Здесь только запросы и подсчёты, без знания
+о HTTP: то же самое понадобится команде бота, ночному отчёту и выгрузке.
+Веб-слой остаётся тонким — маршрут, проверка входа, вызов отсюда.
+
+Курс тенге держим одной константой: считать маржу в долларах при том, что
+тарифы в тенге, бессмысленно.
+"""
+
+import datetime
+import logging
+import os
+
+from . import db, tenancy, demo
+
+log = logging.getLogger(__name__)
+
+USD_KZT = float(os.environ.get("USD_KZT", "540"))
+
+
+def _kzt(usd):
+    return round(float(usd or 0) * USD_KZT)
+
+
+# --- Обзор ------------------------------------------------------------------
+
+def overview():
+    """
+    Первый экран панели. Всё, что нужно знать за десять секунд:
+    сколько денег, сколько живых клиентов, что горит.
+    """
+    companies = db.query(
+        """SELECT status, plan, COUNT(*) AS n FROM companies
+            WHERE activation_code <> %s GROUP BY status, plan""",
+        (demo.ACTIVATION_CODE,),
+    ) or []
+
+    by_status = {}
+    revenue = 0
+    for row in companies:
+        by_status[row["status"]] = by_status.get(row["status"], 0) + row["n"]
+        if row["status"] == tenancy.STATUS_ACTIVE:
+            revenue += tenancy.PLANS.get(row["plan"], {}).get("price_kzt", 0) * row["n"]
+
+    sessions = db.query(
+        """SELECT COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE result='won') AS won,
+                  COUNT(*) FILTER (WHERE finished_at > now() - interval '7 days') AS week
+             FROM sessions""", one=True,
+    ) or {}
+
+    spend = db.query(
+        """SELECT COALESCE(SUM(cost_usd),0) AS usd
+             FROM usage_log WHERE created_at > now() - interval '30 days'""", one=True,
+    ) or {}
+
+    total = int(sessions.get("total") or 0)
+    won = int(sessions.get("won") or 0)
+
+    return {
+        "companies": {
+            "active": by_status.get(tenancy.STATUS_ACTIVE, 0),
+            "pending": by_status.get(tenancy.STATUS_PENDING_SETUP, 0),
+            "suspended": by_status.get(tenancy.STATUS_SUSPENDED, 0),
+            "total": sum(by_status.values()),
+        },
+        "revenue_kzt": revenue,
+        "spend_kzt": _kzt(spend.get("usd")),
+        "margin_kzt": revenue - _kzt(spend.get("usd")),
+        "sessions": {
+            "total": total,
+            "week": int(sessions.get("week") or 0),
+            "conversion": round(won / total * 100) if total else 0,
+        },
+        "attention": attention(),
+    }
+
+
+def attention():
+    """
+    Клиенты, требующие действия. Три сценария, из которых складывается
+    почти весь отток: кончается подписка, застряли на брифе, отдел не
+    тренируется. Каждый чинится одним звонком — если о нём знать.
+    """
+    expiring = db.query(
+        """SELECT id, title, plan, expires_at FROM companies
+            WHERE status <> %s AND expires_at IS NOT NULL
+              AND expires_at BETWEEN now() AND now() + interval '7 days'
+         ORDER BY expires_at LIMIT 20""",
+        (tenancy.STATUS_SUSPENDED,),
+    ) or []
+
+    stuck = db.query(
+        """SELECT id, title, created_at FROM companies
+            WHERE status = %s AND created_at < now() - interval '1 day'
+         ORDER BY created_at LIMIT 20""",
+        (tenancy.STATUS_PENDING_SETUP,),
+    ) or []
+
+    idle = db.query(
+        """SELECT c.id, c.title,
+                  MAX(s.finished_at) AS last_session
+             FROM companies c
+             LEFT JOIN sessions s ON s.company_id = c.id
+            WHERE c.status = %s AND c.activation_code <> %s
+         GROUP BY c.id, c.title
+           HAVING MAX(s.finished_at) IS NULL
+               OR MAX(s.finished_at) < now() - interval '7 days'
+         ORDER BY last_session NULLS FIRST LIMIT 20""",
+        (tenancy.STATUS_ACTIVE, demo.ACTIVATION_CODE),
+    ) or []
+
+    return {
+        "expiring": [dict(r, days_left=tenancy.days_left(r)) for r in expiring],
+        "stuck": [dict(r) for r in stuck],
+        "idle": [dict(r) for r in idle],
+    }
+
+
+# --- Клиенты ----------------------------------------------------------------
+
+def companies(status=None, q=None, limit=200):
+    """Список компаний с показателями. Демо-компания сюда не попадает."""
+    where = ["c.activation_code <> %s"]
+    params = [demo.ACTIVATION_CODE]
+
+    if status and status != "all":
+        where.append("c.status = %s")
+        params.append(status)
+    if q:
+        where.append("(c.title ILIKE %s OR c.contact_email ILIKE %s)")
+        params += [f"%{q}%", f"%{q}%"]
+
+    params.append(limit)
+    rows = db.query(
+        f"""SELECT c.*,
+                   (SELECT COUNT(*) FROM users u WHERE u.company_id=c.id AND u.active) AS seats_taken,
+                   (SELECT COUNT(*) FROM sessions s WHERE s.company_id=c.id) AS sessions_total,
+                   (SELECT COUNT(*) FROM sessions s WHERE s.company_id=c.id AND s.result='won') AS sessions_won,
+                   (SELECT COALESCE(SUM(cost_usd),0) FROM usage_log g WHERE g.company_id=c.id) AS spend_usd
+              FROM companies c
+             WHERE {' AND '.join(where)}
+          ORDER BY c.created_at DESC LIMIT %s""",
+        tuple(params),
+    ) or []
+    return [_company_row(r) for r in rows]
+
+
+def _company_row(r):
+    total = int(r.get("sessions_total") or 0)
+    won = int(r.get("sessions_won") or 0)
+    plan = tenancy.PLANS.get(r["plan"], {})
+    return {
+        "id": r["id"],
+        "title": r["title"],
+        "plan": r["plan"],
+        "plan_title": plan.get("title", r["plan"]),
+        "price_kzt": plan.get("price_kzt", 0),
+        "status": r["status"],
+        "seats": r["seats"],
+        "seats_taken": int(r.get("seats_taken") or 0),
+        "session_limit": r["session_limit"],
+        "sessions_used": r["sessions_used"],
+        "sessions_total": total,
+        "conversion": round(won / total * 100) if total else None,
+        "spend_kzt": _kzt(r.get("spend_usd")),
+        "expires_at": r["expires_at"],
+        "days_left": tenancy.days_left(r),
+        "created_at": r["created_at"],
+        "activation_code": r["activation_code"],
+        "invite_code": r["invite_code"],
+        "contact_email": r.get("contact_email"),
+        "health": health(r, total),
+    }
+
+
+def health(company, sessions_total):
+    """
+    Простой индекс риска: используется ли то, за что заплачено.
+
+    Не наука, а сигнал. Компания, где за месяц не провели ни одной
+    тренировки, не продлится — и об этом надо знать за неделю, а не
+    в день окончания.
+    """
+    if company["status"] == tenancy.STATUS_SUSPENDED:
+        return "suspended"
+    if company["status"] == tenancy.STATUS_PENDING_SETUP:
+        return "setup"
+    if not sessions_total:
+        return "cold"
+
+    used = int(company.get("sessions_used") or 0)
+    limit = max(1, int(company.get("session_limit") or 1))
+    share = used / limit
+    if share < 0.1:
+        return "cold"
+    if share < 0.4:
+        return "warm"
+    return "hot"
+
+
+def company(company_id):
+    """Карточка компании: показатели, сотрудники, расход, история."""
+    rows = db.query(
+        """SELECT c.*,
+                  (SELECT COUNT(*) FROM users u WHERE u.company_id=c.id AND u.active) AS seats_taken,
+                  (SELECT COUNT(*) FROM sessions s WHERE s.company_id=c.id) AS sessions_total,
+                  (SELECT COUNT(*) FROM sessions s WHERE s.company_id=c.id AND s.result='won') AS sessions_won,
+                  (SELECT COALESCE(SUM(cost_usd),0) FROM usage_log g WHERE g.company_id=c.id) AS spend_usd
+             FROM companies c WHERE c.id=%s""",
+        (company_id,), one=True,
+    )
+    if not rows:
+        return None
+
+    card = _company_row(rows)
+    card["team"] = [dict(t) for t in (tenancy.team(company_id) or [])]
+    card["history"] = [dict(h) for h in (tenancy.history(company_id, 30) or [])]
+    card["profile"] = _profile_brief(company_id)
+    return card
+
+
+def _profile_brief(company_id):
+    row = db.query(
+        """SELECT profile, created_at FROM niche_profiles
+            WHERE company_id=%s AND is_active LIMIT 1""",
+        (company_id,), one=True,
+    )
+    if not row:
+        return None
+    p = row["profile"]
+    if isinstance(p, str):
+        import json
+        p = json.loads(p)
+    return {
+        "title": p.get("title"),
+        "statuses": len(p.get("statuses") or []),
+        "requests": len(p.get("requests") or []),
+        "created_at": row["created_at"],
+    }
+
+
+# --- Пользователи -----------------------------------------------------------
+
+def users(q=None, company_id=None, limit=200):
+    where, params = [], []
+    if q:
+        where.append("(u.full_name ILIKE %s OR u.username ILIKE %s OR CAST(u.telegram_id AS TEXT) LIKE %s)")
+        params += [f"%{q}%", f"%{q}%", f"%{q}%"]
+    if company_id:
+        where.append("u.company_id = %s")
+        params.append(company_id)
+    params.append(limit)
+
+    rows = db.query(
+        f"""SELECT u.*, c.title AS company_title, c.status AS company_status,
+                   COUNT(s.id) AS sessions,
+                   COUNT(*) FILTER (WHERE s.result='won') AS won
+              FROM users u
+              JOIN companies c ON c.id = u.company_id
+              LEFT JOIN sessions s ON s.user_id = u.id
+             {('WHERE ' + ' AND '.join(where)) if where else ''}
+          GROUP BY u.id, c.title, c.status
+          ORDER BY u.joined_at DESC LIMIT %s""",
+        tuple(params),
+    ) or []
+
+    out = []
+    for r in rows:
+        total = int(r.get("sessions") or 0)
+        won = int(r.get("won") or 0)
+        out.append({
+            "telegram_id": r["telegram_id"],
+            "full_name": r.get("full_name"),
+            "username": r.get("username"),
+            "role": r["role"],
+            "active": r["active"],
+            "company_id": r["company_id"],
+            "company_title": r["company_title"],
+            "sessions": total,
+            "conversion": round(won / total * 100) if total else None,
+            "last_seen_at": r.get("last_seen_at"),
+            "joined_at": r.get("joined_at"),
+        })
+    return out
+
+
+def last_session(telegram_id):
+    """Последняя тренировка целиком — для разбора претензий клиента."""
+    s = db.query(
+        """SELECT * FROM sessions WHERE telegram_id=%s
+        ORDER BY finished_at DESC LIMIT 1""",
+        (telegram_id,), one=True,
+    )
+    if not s:
+        return None
+    msgs = db.query(
+        "SELECT role, text, created_at FROM messages WHERE session_id=%s ORDER BY id",
+        (s["id"],),
+    ) or []
+    return {"session": dict(s), "messages": [dict(m) for m in msgs]}
+
+
+# --- Демо -------------------------------------------------------------------
+
+def demo_queue(limit=100):
+    """Гости, попробовавшие демо. Единственный источник тёплых лидов."""
+    try:
+        cid = demo.company_id()
+    except Exception:
+        return []
+    rows = db.query(
+        """SELECT u.telegram_id, u.full_name, u.username, u.joined_at,
+                  COUNT(s.id) AS sessions,
+                  COUNT(*) FILTER (WHERE s.result='won') AS won,
+                  MAX(s.finished_at) AS last_at
+             FROM users u
+             LEFT JOIN sessions s ON s.user_id = u.id
+            WHERE u.company_id = %s
+         GROUP BY u.telegram_id, u.full_name, u.username, u.joined_at
+         ORDER BY u.joined_at DESC LIMIT %s""",
+        (cid, limit),
+    ) or []
+    return [{
+        "telegram_id": r["telegram_id"],
+        "full_name": r.get("full_name"),
+        "username": r.get("username"),
+        "sessions": int(r.get("sessions") or 0),
+        "won": int(r.get("won") or 0),
+        "joined_at": r.get("joined_at"),
+        "last_at": r.get("last_at"),
+    } for r in rows]
+
+
+# --- Деньги -----------------------------------------------------------------
+
+def money(days=30):
+    """
+    Расход и маржа по каждому клиенту. Здесь становится видно,
+    не убыточен ли конкретный тариф.
+    """
+    rows = db.query(
+        """SELECT c.id, c.title, c.plan, c.status,
+                  COALESCE(SUM(g.cost_usd),0) AS usd,
+                  COUNT(DISTINCT s.id) AS sessions
+             FROM companies c
+             LEFT JOIN usage_log g ON g.company_id=c.id
+                   AND g.created_at > now() - (%s || ' days')::interval
+             LEFT JOIN sessions s ON s.company_id=c.id
+                   AND s.finished_at > now() - (%s || ' days')::interval
+         GROUP BY c.id, c.title, c.plan, c.status
+         ORDER BY usd DESC""",
+        (str(days), str(days)),
+    ) or []
+
+    out = []
+    for r in rows:
+        spend = _kzt(r["usd"])
+        price = tenancy.PLANS.get(r["plan"], {}).get("price_kzt", 0)
+        revenue = price if r["status"] == tenancy.STATUS_ACTIVE else 0
+        sessions = int(r.get("sessions") or 0)
+        out.append({
+            "id": r["id"],
+            "title": r["title"],
+            "plan": r["plan"],
+            "revenue_kzt": revenue,
+            "spend_kzt": spend,
+            "margin_kzt": revenue - spend,
+            "sessions": sessions,
+            "per_session_kzt": round(spend / sessions) if sessions else None,
+        })
+
+    by_model = db.query(
+        """SELECT model, COALESCE(SUM(cost_usd),0) AS usd, COUNT(*) AS calls
+             FROM usage_log WHERE created_at > now() - (%s || ' days')::interval
+         GROUP BY model ORDER BY usd DESC""",
+        (str(days),),
+    ) or []
+
+    return {
+        "companies": out,
+        "by_model": [{"model": r["model"], "spend_kzt": _kzt(r["usd"]),
+                      "calls": int(r["calls"])} for r in by_model],
+        "total_spend_kzt": sum(x["spend_kzt"] for x in out),
+        "total_revenue_kzt": sum(x["revenue_kzt"] for x in out),
+    }
+
+
+# --- Отчёты -----------------------------------------------------------------
+
+def summary(days=30):
+    """Сводка за период — то, что уходит в ночной отчёт и в выгрузку."""
+    new = db.query(
+        """SELECT COUNT(*) AS n FROM companies
+            WHERE created_at > now() - (%s || ' days')::interval
+              AND activation_code <> %s""",
+        (str(days), demo.ACTIVATION_CODE), one=True,
+    ) or {}
+    sess = db.query(
+        """SELECT COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE result='won') AS won,
+                  COUNT(DISTINCT telegram_id) AS people
+             FROM sessions WHERE finished_at > now() - (%s || ' days')::interval""",
+        (str(days),), one=True,
+    ) or {}
+    total = int(sess.get("total") or 0)
+    won = int(sess.get("won") or 0)
+
+    daily = db.query(
+        """SELECT date_trunc('day', finished_at) AS day,
+                  COUNT(*) AS n,
+                  COUNT(*) FILTER (WHERE result='won') AS won
+             FROM sessions WHERE finished_at > now() - (%s || ' days')::interval
+         GROUP BY 1 ORDER BY 1""",
+        (str(days),),
+    ) or []
+
+    return {
+        "days": days,
+        "new_companies": int(new.get("n") or 0),
+        "sessions": total,
+        "people": int(sess.get("people") or 0),
+        "conversion": round(won / total * 100) if total else 0,
+        "daily": [{"day": r["day"], "n": int(r["n"]), "won": int(r["won"])} for r in daily],
+    }
+
+
+def psychotypes(company_id=None, days=90):
+    """Разбивка по типам клиентов: где отдел ломается."""
+    where = ["finished_at > now() - (%s || ' days')::interval"]
+    params = [str(days)]
+    if company_id:
+        where.append("company_id = %s")
+        params.append(company_id)
+    rows = db.query(
+        f"""SELECT psychotype_id, status_title,
+                   COUNT(*) AS n, COUNT(*) FILTER (WHERE result='won') AS won
+              FROM sessions WHERE {' AND '.join(where)}
+          GROUP BY psychotype_id, status_title ORDER BY n DESC""",
+        tuple(params),
+    ) or []
+    return [{
+        "psychotype": r.get("psychotype_id"),
+        "status": r.get("status_title"),
+        "n": int(r["n"]),
+        "conversion": round(int(r["won"]) / int(r["n"]) * 100) if r["n"] else 0,
+    } for r in rows]
+
+
+# --- Рассылка ---------------------------------------------------------------
+
+SEGMENTS = {
+    "owners": "Владельцы компаний",
+    "managers": "Менеджеры",
+    "all": "Все пользователи",
+    "expiring": "У кого истекает подписка",
+    "idle": "Не заходили 7 дней",
+    "demo": "Гости после демо",
+}
+
+
+def segment(name, company_id=None):
+    """Кому уйдёт рассылка. Возвращает список telegram_id."""
+    if company_id:
+        rows = db.query(
+            "SELECT telegram_id FROM users WHERE company_id=%s AND active", (company_id,))
+    elif name == "owners":
+        rows = db.query(
+            """SELECT u.telegram_id FROM users u JOIN companies c ON c.id=u.company_id
+                WHERE u.role=%s AND u.active AND c.activation_code <> %s""",
+            (tenancy.ROLE_OWNER, demo.ACTIVATION_CODE))
+    elif name == "managers":
+        rows = db.query(
+            """SELECT u.telegram_id FROM users u JOIN companies c ON c.id=u.company_id
+                WHERE u.role=%s AND u.active AND c.activation_code <> %s""",
+            (tenancy.ROLE_MANAGER, demo.ACTIVATION_CODE))
+    elif name == "expiring":
+        rows = db.query(
+            """SELECT u.telegram_id FROM users u JOIN companies c ON c.id=u.company_id
+                WHERE u.role=%s AND u.active AND c.expires_at IS NOT NULL
+                  AND c.expires_at BETWEEN now() AND now() + interval '14 days'""",
+            (tenancy.ROLE_OWNER,))
+    elif name == "idle":
+        rows = db.query(
+            """SELECT u.telegram_id FROM users u JOIN companies c ON c.id=u.company_id
+                WHERE u.active AND c.activation_code <> %s
+                  AND (u.last_seen_at IS NULL OR u.last_seen_at < now() - interval '7 days')""",
+            (demo.ACTIVATION_CODE,))
+    elif name == "demo":
+        try:
+            rows = db.query("SELECT telegram_id FROM users WHERE company_id=%s",
+                            (demo.company_id(),))
+        except Exception:
+            rows = []
+    else:  # all
+        rows = db.query(
+            """SELECT u.telegram_id FROM users u JOIN companies c ON c.id=u.company_id
+                WHERE u.active AND c.activation_code <> %s""",
+            (demo.ACTIVATION_CODE,))
+    return [r["telegram_id"] for r in (rows or [])]

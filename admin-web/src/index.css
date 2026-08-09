@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+body {
+  margin: 0;
+  background: #0B0D11;
+  color: #fff;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: rgba(233, 161, 120, 0.3); }
+
+/* Полосы прокрутки в тёмной теме по умолчанию светлые и режут глаз. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #232935; border-radius: 6px; border: 2px solid #0B0D11; }
+::-webkit-scrollbar-thumb:hover { background: #2E3644; }
+
+input, select, textarea { font-family: inherit; }
+input:focus, select:focus, textarea:focus { outline: none; }

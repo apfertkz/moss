@@ -31,7 +31,8 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from trainer import register_trainer, main_reply_kb, db, tenancy, onboarding, stats, guide, demo, notify
+from trainer import (register_trainer, main_reply_kb, db, tenancy, onboarding,
+                     stats, guide, demo, notify, webadmin)
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -524,6 +525,13 @@ async def main():
     # Фоновая проверка подписок и уборка брошенных тренировок.
     # Живёт рядом с опросом Telegram, отдельного планировщика не нужно.
     asyncio.create_task(notify.loop(bot))
+
+    # Панель управления. Поднимается только если у сервиса есть домен:
+    # без PORT Railway её всё равно не откроет наружу.
+    try:
+        await webadmin.start(bot)
+    except Exception:
+        log.exception("Панель не поднялась — бот продолжает работать")
 
     await notify.admin(bot, f"🟢 Бот @{me.username} поднялся", quiet=True)
     await dp.start_polling(bot)

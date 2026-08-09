@@ -23,9 +23,11 @@ telegram_id пользователя, профиль ниши и статист�
 
 from .handlers import register_trainer, main_reply_kb, trainer_reply_kb
 from . import (db, tenancy, onboarding, niche_loader, stats, engine, costs,
-               brief, persona, guide, demo, store, llm, notify)
+               brief, persona, guide, demo, store, llm, notify,
+               admin_data, webadmin)
 
 __all__ = [
+    "admin_data", "webadmin",
     "notify",
     "llm",
     "store",
