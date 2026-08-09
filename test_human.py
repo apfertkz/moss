@@ -178,11 +178,36 @@ def main():
     check("системная строка не ломает стенограмму", "Система:" in txt)
     check("роли расставлены", "Менеджер:" in txt and "Покупатель:" in txt)
 
+    test_media()
+
+
+
+
+def test_media():
+    """Фото и голосовые от менеджера — законные ходы, а не ошибка ввода."""
+    print("\n10. Фото и голос от менеджера")
+    profile = niche_loader.load_file_profile("moss")
+    sc = engine.new_scenario(profile)
+    prompt = engine._build_system_prompt(sc, profile)
+    check("промпт объясняет строку об отправке фото", "(отправил 5 фото работ)" in prompt)
+    check("показ примеров засчитывается", "засчитывай его как выполненный показ" in prompt)
+    check("но одни картинки не закрывают", "ещё не закрывают" in prompt)
+
+    s = make_session(profile)
+    s["scenario"]["persona"]["silence_bias"] = 0.0
+    client = fake_client([{"buyer_messages": ["о, вот это второе ничего"],
+                           "deal_state": "active"}])
+    r = engine.step(client, s, "(отправил 5 фото работ)")
+    sent = client._calls[0]["messages"][0]["content"]
+    check("ход с фото доходит до модели", "5 фото работ" in sent)
+    check("клиент отвечает на фото", r["buyer_messages"] == ["о, вот это второе ничего"])
+    check("фото не считается простынёй", "это простыня" not in sent)
+
     print("\n" + "=" * 58)
     if FAILS:
         print(f"ПРОВАЛЕНО {len(FAILS)}: " + "; ".join(FAILS))
         sys.exit(1)
-    print("Все проверки пройдены.")
+    print("Проверки медиа пройдены.")
 
 
 if __name__ == "__main__":

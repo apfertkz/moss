@@ -191,7 +191,9 @@ async def send_answer(user_id: int, text: str, with_voice: bool = False):
 # --- Тренажёр регистрируется ДО хендлеров консультанта: при активной
 # --- тренировке его хендлеры должны перехватывать текст первыми.
 # Голос передаём только если есть ключ OpenAI — без него клиент пишет текстом.
-register_trainer(dp, bot, client, tts=text_to_speech if openai_sync else None)
+register_trainer(dp, bot, client,
+                 tts=text_to_speech if openai_sync else None,
+                 stt=transcribe_voice if openai_async else None)
 
 
 # --- Вход по ссылке ---------------------------------------------------------

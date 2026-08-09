@@ -47,6 +47,10 @@ BTN_TEAM = "👥 Отдел"
 # текстом, поэтому мастер брифа обязан их узнавать, а не принимать за ответ.
 BUTTON_LABELS = {BTN_TRAINER, BTN_NEW, BTN_STATS, BTN_EXIT, BTN_TEAM}
 
+# Владельцу продукта показываем текст ошибки прямо в чате: иначе причину
+# видно только в логах Railway, а это лишний круг.
+ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
+
 
 def main_reply_kb(is_owner=False):
     rows = [[KeyboardButton(text=BTN_TRAINER), KeyboardButton(text=BTN_STATS)]]
@@ -96,9 +100,13 @@ async def safe_answer(message: Message, text, **kw):
         return await message.answer(text, **kw)
 
 
-def register_trainer(dp, bot, client, tts=None):
+def register_trainer(dp, bot, client, tts=None, stt=None):
     """
     Регистрирует хендлеры тренажёра.
+
+    stt — необязательная асинхронная функция (bytes) -> str для распознавания
+    голосовых от менеджера. Продавцы диктуют постоянно, и отфутболивать их
+    просьбой «напиши текстом» — значит ломать привычный им способ работы.
 
     tts — необязательная асинхронная функция (text, voice) -> bytes.
     Если передана и включён VOICE_CLIENT_CHANCE, клиент иногда присылает
@@ -568,9 +576,75 @@ def register_trainer(dp, bot, client, tts=None):
 
     # ---------- Во время сессии ----------
 
-    @dp.message((F.photo | F.voice | F.audio), _in_session)
-    async def wrong_input_in_session(message: Message):
-        await message.answer("В тренажёре общайся с клиентом *текстом* 🙂", parse_mode="Markdown")
+    # Медиагруппы приходят по одному сообщению на файл. Без склейки бот
+    # отвечает столько раз, сколько прислали фото.
+    _photo_groups = {}
+    _photo_timers = {}
+
+    @dp.message(F.voice | F.audio, _in_session)
+    async def voice_in_session(message: Message):
+        """
+        Голосовое от менеджера. Продавцы в переписке диктуют постоянно,
+        поэтому не отфутболиваем, а распознаём и считаем обычным ходом.
+        """
+        uid = message.from_user.id
+        session = SESSIONS.get(uid)
+        if not session:
+            return
+        if not stt:
+            await message.answer("Распознавание голоса сейчас недоступно — напиши текстом.")
+            return
+
+        u = await _user(message)
+        if not u:
+            return
+        await bot.send_chat_action(uid, "typing")
+        try:
+            voice = message.voice or message.audio
+            f = await bot.get_file(voice.file_id)
+            raw = await bot.download_file(f.file_path)
+            text = (await stt(raw.read()) or "").strip()
+        except Exception:
+            log.exception("Не удалось распознать голосовое менеджера")
+            await message.answer("Не разобрал голосовое — напиши текстом.")
+            return
+
+        if not text:
+            await message.answer("Не разобрал голосовое — напиши текстом.")
+            return
+        await message.answer(f"🎤 _{text}_", parse_mode="Markdown")
+        await _run_turn(message, u, session, text)
+
+    async def _photo_turn(message: Message, uid, group_id):
+        """Отправка фото — законный ход продавца: клиент «покупает глазами»."""
+        count = _photo_groups.pop(group_id, 1)
+        _photo_timers.pop(group_id, None)
+        session = SESSIONS.get(uid)
+        if not session:
+            return
+        u = await _user(message)
+        if not u:
+            return
+        caption = (message.caption or "").strip()
+        word = "фото работ" if count > 1 else "фото работы"
+        text = f"(отправил {count} {word})" if count > 1 else f"(отправил {word})"
+        if caption:
+            text += f" с подписью: {caption}"
+        await _run_turn(message, u, session, text)
+
+    @dp.message(F.photo | F.document, _in_session)
+    async def photo_in_session(message: Message):
+        uid = message.from_user.id
+        gid = message.media_group_id or f"single_{message.message_id}"
+        _photo_groups[gid] = _photo_groups.get(gid, 0) + 1
+        if gid in _photo_timers:
+            _photo_timers[gid].cancel()
+
+        async def delayed():
+            await asyncio.sleep(1.5)
+            await _photo_turn(message, uid, gid)
+
+        _photo_timers[gid] = asyncio.create_task(delayed())
 
     @dp.message(F.text & ~F.text.startswith("/"), _in_session)
     async def training_turn(message: Message):
@@ -582,20 +656,28 @@ def register_trainer(dp, bot, client, tts=None):
         if not u:
             SESSIONS.pop(uid, None)
             return
+        await _run_turn(message, u, session, message.text)
 
+    async def _run_turn(message: Message, u, session, manager_text):
+        """Один ход тренировки. Общий путь для текста, голоса и фото."""
+        uid = message.from_user.id
         loop = asyncio.get_event_loop()
         scenario = session["scenario"]
-        session["transcript"].append(("manager", message.text))
+        session["transcript"].append(("manager", manager_text))
         session["turns"] += 1
         was_followup = session.get("awaiting_followup", False)
 
         await bot.send_chat_action(uid, "typing")
         try:
             result = await loop.run_in_executor(
-                None, engine.step, client, session, message.text)
-        except Exception:
+                None, engine.step, client, session, manager_text)
+        except Exception as e:
             log.exception("Ошибка хода тренажёра")
-            await message.answer("⚠️ Тренажёр споткнулся. Напиши сообщение ещё раз.")
+            detail = f"\n\n`{type(e).__name__}: {str(e)[:180]}`" if uid in ADMIN_IDS else ""
+            await safe_answer(
+                message,
+                "⚠️ Тренажёр споткнулся. Напиши сообщение ещё раз." + detail,
+                parse_mode="Markdown")
             return
 
         usage = result.get("usage")
