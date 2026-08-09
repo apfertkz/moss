@@ -14,7 +14,7 @@ MOSS SALE — точка входа.
   DEBRIEF_MODEL       — модель разбора, по умолчанию claude-opus-5
   ADMIN_IDS           — telegram_id владельца продукта, через запятую
   VOICE_CLIENT_CHANCE — доля голосовых от клиента в тренажёре, 0..1 (по умолчанию 0)
-  LONG_MESSAGE_CHARS  — с какой длины сообщение менеджера считается простынёй (420)
+  LONG_MESSAGE_CHARS  — с какой длины сообщение менеджера считается простынёй (420)\n\nКоманда /diag (для ADMIN_IDS) проверяет доступность моделей и базы вживую.
 """
 
 import os
@@ -307,6 +307,63 @@ async def spend_cmd(message: Message):
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
+
+# --- Диагностика моделей ------------------------------------------------------
+
+def _probe_model(model_name):
+    """Один дешёвый вызов, чтобы понять, доступна ли модель этому ключу."""
+    try:
+        client.messages.create(
+            model=model_name, max_tokens=5,
+            messages=[{"role": "user", "content": "ok"}],
+        )
+        return True, "доступна"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:220]}"
+
+
+def check_models():
+    """
+    Проверка при старте. Если модель недоступна ключу, тренажёр молча
+    сваливается в запасной вариант — клиент присылает сырой запрос из профиля
+    вместо живой реплики. Без этой проверки причину видно только в логах.
+    """
+    from trainer import engine
+    results = {}
+    for label, name in (("консультант", CONSULTANT_MODEL),
+                        ("диалог", engine.DIALOG_MODEL),
+                        ("разбор", engine.DEBRIEF_MODEL)):
+        ok, msg = _probe_model(name)
+        results[label] = (name, ok, msg)
+        if ok:
+            log.info("Модель «%s» (%s) — доступна", label, name)
+        else:
+            log.error("Модель «%s» (%s) НЕДОСТУПНА — %s", label, name, msg)
+    return results
+
+
+@dp.message(Command("diag"))
+async def diag_cmd(message: Message):
+    """Живая проверка моделей и базы. Только для ADMIN_IDS."""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await message.answer("Проверяю…")
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, check_models)
+
+    lines = ["Диагностика", ""]
+    for label, (name, ok, msg) in results.items():
+        lines.append(f"{'✅' if ok else '❌'} {label}: {name}")
+        if not ok:
+            lines.append(f"    {msg}")
+    db_ok = await loop.run_in_executor(None, db.healthcheck)
+    lines += ["", f"{'✅' if db_ok else '❌'} база данных"]
+    lines += ["", f"OpenAI: {'подключён' if openai_sync else 'нет ключа'}"]
+    lines.append(f"Голосовые клиента: {os.environ.get('VOICE_CLIENT_CHANCE', '0')}")
+    # Без Markdown: в названиях моделей и текстах ошибок бывают подчёркивания.
+    await message.answer("\n".join(lines))
+
+
 # --- Консультант ------------------------------------------------------------
 
 @dp.callback_query(F.data == "new_situation")
@@ -441,8 +498,8 @@ async def main():
     if not db.healthcheck():
         raise SystemExit("База недоступна — проверь DATABASE_URL")
     me = await bot.get_me()
-    log.info("Бот @%s запущен. Модель диалога: %s", me.username,
-             os.environ.get("TRAINER_MODEL", "claude-sonnet-5"))
+    log.info("Бот @%s запущен", me.username)
+    await asyncio.get_event_loop().run_in_executor(None, check_models)
     await dp.start_polling(bot)
 
 

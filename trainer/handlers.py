@@ -321,12 +321,13 @@ def register_trainer(dp, bot, client, tts=None):
         await loop.run_in_executor(None, tenancy.set_status, u["company_id"], tenancy.STATUS_ACTIVE)
         me = await bot.get_me()
         link = f"https://t.me/{me.username}?start=join_{u['invite_code']}"
+        # Тоже без Markdown — по той же причине, что и в /invite.
         await callback.message.answer(
-            f"✅ *Профиль сохранён* (версия {version}). Компания готова к работе.\n\n"
+            f"✅ Профиль сохранён (версия {version}). Компания готова к работе.\n\n"
             f"Осталось позвать менеджеров — отправьте им эту ссылку:\n{link}\n\n"
-            f"Свободных мест: *{u['seats'] - tenancy.seats_taken(u['company_id'])}* из {u['seats']}.\n\n"
+            f"Свободных мест: {u['seats'] - tenancy.seats_taken(u['company_id'])} из {u['seats']}.\n\n"
             f"Сами можете попробовать прямо сейчас — кнопка «🎯 Тренажёр» внизу.",
-            parse_mode="Markdown", disable_web_page_preview=True,
+            disable_web_page_preview=True,
             reply_markup=main_reply_kb(True),
         )
         await callback.answer("Готово")
@@ -487,11 +488,14 @@ def register_trainer(dp, bot, client, tts=None):
         me = await bot.get_me()
         link = f"https://t.me/{me.username}?start=join_{u['invite_code']}"
         free = u["seats"] - tenancy.seats_taken(u["company_id"])
+        # Без Markdown: в ссылке есть «join_», и подчёркивание ломает разметку —
+        # Telegram отклоняет такое сообщение целиком, и пользователь не получает ничего.
         await message.answer(
-            f"👥 *Ссылка для менеджеров*\n\n{link}\n\n"
-            f"Отправьте её в рабочий чат. Свободных мест: *{free}* из {u['seats']}.\n\n"
-            f"_Если ссылка утекла за пределы компании — /revoke выдаст новую, старая перестанет работать._",
-            parse_mode="Markdown", disable_web_page_preview=True,
+            f"👥 Ссылка для менеджеров\n\n{link}\n\n"
+            f"Отправьте её в рабочий чат. Свободных мест: {free} из {u['seats']}.\n\n"
+            f"Если ссылка утекла за пределы компании — /revoke выдаст новую, "
+            f"старая перестанет работать.",
+            disable_web_page_preview=True,
         )
 
     @dp.message(Command("revoke"))
