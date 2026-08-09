@@ -30,7 +30,7 @@ from aiogram.types import (
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from . import engine, stats, tenancy, niche_loader, brief, persona
+from . import engine, stats, tenancy, niche_loader, brief, persona, guide
 
 log = logging.getLogger(__name__)
 
@@ -158,6 +158,13 @@ def register_trainer(dp, bot, client, tts=None, stt=None):
 
     def _is_owner(u):
         return u and u["role"] == tenancy.ROLE_OWNER
+
+    @dp.message(Command("guide"))
+    async def guide_cmd(message: Message):
+        u = await _user(message)
+        if not u:
+            return
+        await guide.deliver(bot, message.from_user.id, guide.REPEAT_TEXT)
 
     # ======================================================================
     # МАСТЕР БРИФА

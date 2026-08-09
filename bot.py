@@ -14,7 +14,8 @@ MOSS SALE — точка входа.
   DEBRIEF_MODEL       — модель разбора, по умолчанию claude-opus-5
   ADMIN_IDS           — telegram_id владельца продукта, через запятую
   VOICE_CLIENT_CHANCE — доля голосовых от клиента в тренажёре, 0..1 (по умолчанию 0)
-  LONG_MESSAGE_CHARS  — с какой длины сообщение менеджера считается простынёй (420)\n\nКоманда /diag (для ADMIN_IDS) проверяет доступность моделей и базы вживую.
+  LONG_MESSAGE_CHARS  — с какой длины сообщение менеджера считается простынёй (420)
+  PUBLIC_URL          — адрес гайда, если домен не от Railway (необязательно)\n\nКоманда /diag (для ADMIN_IDS) проверяет доступность моделей и базы вживую.
 """
 
 import os
@@ -30,7 +31,7 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from trainer import register_trainer, main_reply_kb, db, tenancy, onboarding, stats
+from trainer import register_trainer, main_reply_kb, db, tenancy, onboarding, stats, guide
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -212,9 +213,15 @@ async def start_deeplink(message: Message, command: CommandObject):
         return
 
     conversations[message.from_user.id] = []
-    await message.answer(
-        text, parse_mode="Markdown",
-        reply_markup=main_reply_kb(user["role"] == tenancy.ROLE_OWNER))
+    is_owner = user["role"] == tenancy.ROLE_OWNER
+
+    # Сначала приветствие с одним понятным следующим шагом.
+    await message.answer(text, parse_mode="Markdown",
+                         reply_markup=main_reply_kb(is_owner))
+
+    # И только вторым сообщением — гайд. Если положить его в приветствие,
+    # внимание раздваивается и человек не делает ни того, ни другого.
+    await guide.deliver(bot, message.from_user.id, guide.text_for(is_owner))
 
 
 @dp.message(CommandStart())

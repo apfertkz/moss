@@ -17,14 +17,15 @@ telegram_id пользователя, профиль ниши и статист�
   algorithm   — эталонный алгоритм продажи по Гребенюку
   stats       — статистика по менеджеру и по отделу, учёт расхода
   costs       — цены моделей и расчёт себестоимости вызова
+  guide       — раздача гайда: ссылка, тексты и отдача веб-страницы
   handlers    — хендлеры aiogram
 """
 
 from .handlers import register_trainer, main_reply_kb, trainer_reply_kb
-from . import db, tenancy, onboarding, niche_loader, stats, engine, costs, brief, persona
+from . import db, tenancy, onboarding, niche_loader, stats, engine, costs, brief, persona, guide
 
 __all__ = [
     "register_trainer", "main_reply_kb", "trainer_reply_kb",
     "db", "tenancy", "onboarding", "niche_loader", "stats", "engine", "costs", "brief",
-    "persona",
+    "persona", "guide",
 ]
