@@ -409,6 +409,60 @@ def build_app(bot):
 
     # ---------- настройки ----------
 
+    async def plan_save(request):
+        """Правка тарифа из панели — без деплоя."""
+        d = await body(request)
+        key = (d.get("key") or "").strip()
+        if not key:
+            return jsonify({"error": "Не указан тариф"}, 400)
+        await in_thread(tenancy.save_plan, key, d.get("title"), d.get("price_kzt"),
+                        d.get("seats"), d.get("session_limit"))
+        await in_thread(tenancy.log_action, actor(request), "plan.save", None, None, d)
+        return jsonify({"plans": tenancy.PLANS})
+
+    async def export(request):
+        """Выгрузки в CSV. Имя файла с датой — иначе в папке каша."""
+        what = request.match_info["what"]
+        days = int(request.query.get("days", 30))
+        cid = request.query.get("company_id")
+
+        makers = {
+            "companies": lambda: admin_data.export_companies(),
+            "money": lambda: admin_data.export_money(days),
+            "sessions": lambda: admin_data.export_sessions(int(cid) if cid else None, 90),
+        }
+        if what not in makers:
+            return web.Response(status=404, text="Нет такой выгрузки")
+
+        text = await in_thread(makers[what])
+        stamp = datetime.date.today().isoformat()
+        return web.Response(
+            body=text.encode("utf-8"),
+            content_type="text/csv", charset="utf-8",
+            headers={"Content-Disposition": f'attachment; filename="moss-{what}-{stamp}.csv"'},
+        )
+
+    async def client_report(request):
+        """Отчёт для клиента: показать в панели и по кнопке отправить владельцу."""
+        cid = int(request.match_info["id"])
+        text = await in_thread(admin_data.client_report, cid)
+        if not text:
+            return jsonify({"error": "Компания не найдена"}, 404)
+
+        if (await body(request)).get("send"):
+            owner = await in_thread(tenancy.owner_of, cid)
+            if not owner:
+                return jsonify({"error": "У компании нет руководителя"}, 400)
+            try:
+                await bot.send_message(owner["telegram_id"], text, parse_mode="Markdown")
+            except Exception as e:
+                return jsonify({"error": f"Не доставлено: {e}"}, 502)
+            await in_thread(tenancy.log_action, actor(request), "report.send", cid,
+                            owner["telegram_id"])
+            return jsonify({"sent": True, "text": text})
+
+        return jsonify({"text": text})
+
     async def settings(request):
         return jsonify({
             "plans": tenancy.PLANS,
@@ -442,6 +496,9 @@ def build_app(bot):
     r.add_get("/api/companies", companies)
     r.add_post("/api/companies", company_create)
     r.add_get("/api/companies/{id}", company)
+    # Обязательно до маршрута с произвольным действием: aiohttp выбирает
+    # первый подходящий по порядку регистрации.
+    r.add_post("/api/companies/{id}/report", client_report)
     r.add_post("/api/companies/{id}/{action}", company_action)
 
     r.add_get("/api/users", users)
@@ -456,6 +513,8 @@ def build_app(bot):
     r.add_get("/api/psychotypes", psychotypes)
     r.add_get("/api/log", log_tail)
     r.add_get("/api/settings", settings)
+    r.add_post("/api/plans", plan_save)
+    r.add_get("/api/export/{what}", export)
 
     r.add_post("/api/broadcast/preview", broadcast_preview)
     r.add_post("/api/broadcast/send", broadcast_send)

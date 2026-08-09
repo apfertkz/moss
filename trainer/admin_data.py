@@ -501,3 +501,125 @@ def segment(name, company_id=None):
                 WHERE u.active AND c.activation_code <> %s""",
             (demo.ACTIVATION_CODE,))
     return [r["telegram_id"] for r in (rows or [])]
+
+
+# --- Выгрузки ---------------------------------------------------------------
+#
+# CSV, а не Excel: открывается всем, включая Google Таблицы, и не требует
+# лишней зависимости. Разделитель — точка с запятой: русский Excel иначе
+# сваливает всю строку в одну ячейку.
+
+def _csv(headers, rows):
+    import csv
+    import io
+
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    w.writerow(headers)
+    for r in rows:
+        w.writerow(r)
+    # BOM — чтобы Excel понял, что это UTF-8, а не крякозябры.
+    return "﻿" + buf.getvalue()
+
+
+def export_companies():
+    rows = companies(limit=10000)
+    return _csv(
+        ["Клиент", "Тариф", "Статус", "Мест занято", "Мест всего",
+         "Тренировок", "Лимит", "Конверсия, %", "Расход, ₸", "Оплачено до", "Подключён"],
+        [[c["title"], c["plan_title"], c["status"], c["seats_taken"], c["seats"],
+          c["sessions_used"], c["session_limit"], c["conversion"] if c["conversion"] is not None else "",
+          c["spend_kzt"], (c["expires_at"] or "")[:10] if isinstance(c["expires_at"], str) else c["expires_at"],
+          str(c["created_at"])[:10]] for c in rows],
+    )
+
+
+def export_money(days=30):
+    d = money(days)
+    return _csv(
+        ["Клиент", "Тариф", "Выручка, ₸", "Расход, ₸", "Маржа, ₸",
+         "Тренировок", "Себестоимость тренировки, ₸"],
+        [[c["title"], c["plan"], c["revenue_kzt"], c["spend_kzt"], c["margin_kzt"],
+          c["sessions"], c["per_session_kzt"] if c["per_session_kzt"] is not None else ""]
+         for c in d["companies"]],
+    )
+
+
+def export_sessions(company_id=None, days=90):
+    where = ["s.finished_at > now() - (%s || ' days')::interval"]
+    params = [str(days)]
+    if company_id:
+        where.append("s.company_id = %s")
+        params.append(company_id)
+
+    rows = db.query(
+        f"""SELECT s.finished_at, c.title AS company, u.full_name, u.username,
+                   s.status_title, s.psychotype_id, s.result, s.turns
+              FROM sessions s
+              JOIN companies c ON c.id = s.company_id
+              LEFT JOIN users u ON u.id = s.user_id
+             WHERE {' AND '.join(where)}
+          ORDER BY s.finished_at DESC LIMIT 20000""",
+        tuple(params),
+    ) or []
+
+    return _csv(
+        ["Дата", "Клиент", "Менеджер", "Тип покупателя", "Психотип", "Итог", "Ходов"],
+        [[str(r["finished_at"])[:16], r["company"],
+          r.get("full_name") or r.get("username") or "",
+          r.get("status_title") or "", r.get("psychotype_id") or "",
+          "закрыта" if r["result"] == "won" else "провалена", r["turns"]] for r in rows],
+    )
+
+
+def client_report(company_id):
+    """
+    Отчёт для самого клиента: кто как продаёт и на ком ломается.
+    Это главный аргумент при продлении, поэтому текст написан так,
+    чтобы его можно было переслать директору без правок.
+    """
+    c = company(company_id)
+    if not c:
+        return None
+
+    lines = [
+        f"# Отдел продаж: {c['title']}",
+        "",
+        f"Период: последние 90 дней. Тариф «{c['plan_title']}».",
+        "",
+        "## Итог",
+        "",
+        f"- Тренировок проведено: {c['sessions_total']}",
+        f"- Сделок закрыто: {c['conversion'] if c['conversion'] is not None else 0}% от всех тренировок",
+        f"- Менеджеров подключено: {c['seats_taken']} из {c['seats']}",
+        "",
+        "## По менеджерам",
+        "",
+    ]
+
+    team = sorted(c.get("team") or [], key=lambda m: -(m.get("total") or 0))
+    if not team:
+        lines.append("Менеджеры ещё не подключены.")
+    for m in team:
+        total = m.get("total") or 0
+        conv = round((m.get("won") or 0) / total * 100) if total else 0
+        name = m.get("full_name") or m.get("username") or m["telegram_id"]
+        mark = "—" if not total else ("сильно" if conv >= 50 else "средне" if conv >= 30 else "слабо")
+        lines.append(f"- **{name}**: {total} тренировок, конверсия {conv}% ({mark})")
+
+    types = psychotypes(company_id)
+    if types:
+        lines += ["", "## С кем справляются хуже всего", ""]
+        for t in sorted(types, key=lambda x: x["conversion"])[:5]:
+            lines.append(f"- {t['status'] or t['psychotype']}: конверсия {t['conversion']}% "
+                         f"из {t['n']} тренировок")
+
+    lines += [
+        "",
+        "## Что с этим делать",
+        "",
+        "Смотрите на тип покупателя с самой низкой конверсией: именно там отдел",
+        "теряет деньги на живых заявках. Разберите с менеджерами один такой",
+        "диалог целиком — что спросили, где назвали цену, чем закрыли.",
+    ]
+    return "\n".join(lines)

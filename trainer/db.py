@@ -204,7 +204,20 @@ CREATE TABLE IF NOT EXISTS reminders_sent (
     sent_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (company_id, kind, period_end)
 );
+
+-- Тарифы. Раньше жили в коде: любая правка цены означала деплой.
+-- Значения по умолчанию засеваются при первом запуске и дальше
+-- редактируются из панели.
+CREATE TABLE IF NOT EXISTS plans (
+    key           TEXT    PRIMARY KEY,
+    title         TEXT    NOT NULL,
+    price_kzt     INTEGER NOT NULL DEFAULT 0,
+    seats         INTEGER NOT NULL DEFAULT 5,
+    session_limit INTEGER NOT NULL DEFAULT 100,
+    sort          INTEGER NOT NULL DEFAULT 0
+);
 """
+
 
 
 

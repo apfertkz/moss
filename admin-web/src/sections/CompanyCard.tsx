@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, Copy, Check } from 'lucide-react'
+import { RefreshCw, Copy, Check, FileDown, Send } from 'lucide-react'
 import { api, type Company } from '../api'
 import { money, num, days, date, dateTime, ago, STATUS_TITLES } from '../format'
 import { Btn, Select, Row, Section, Spinner, Empty, Tag, HealthTag, Bar } from '../ui'
@@ -14,6 +14,7 @@ export default function CompanyCard({
   const [c, setC] = useState<Company | null>(null)
   const [plan, setPlan] = useState('')
   const [copied, setCopied] = useState('')
+  const [report, setReport] = useState('')
 
   const load = () => api.get(`/api/companies/${id}`).then((r) => { setC(r); setPlan(r.plan) })
   useEffect(() => { setC(null); load().catch(() => {}) }, [id])
@@ -173,6 +174,30 @@ export default function CompanyCard({
           ))}
           <Btn size="sm" full onClick={() => act('rotate')}>Перевыпустить приглашение</Btn>
         </div>
+      </Section>
+
+      <Section title="Отчёт для клиента">
+        <div className="grid grid-cols-2 gap-2">
+          <Btn size="sm" onClick={async () => {
+            const r = await api.post(`/api/companies/${id}/report`, {})
+            setReport(r.text)
+          }}>Показать</Btn>
+          <Btn size="sm" tone="accent" onClick={async () => {
+            await api.post(`/api/companies/${id}/report`, { send: true })
+            setReport('Отчёт отправлен руководителю в Telegram.')
+          }}><Send size={13} />Отправить</Btn>
+        </div>
+        <a href={`/api/export/sessions?company_id=${id}`}
+           className="mt-2 flex items-center justify-center gap-1.5 rounded-lg border border-line
+                      bg-white/[0.04] px-3 py-2 text-[12px] text-white/70 hover:bg-white/[0.09]">
+          <FileDown size={13} />Выгрузить тренировки
+        </a>
+        {report && (
+          <pre className="mt-3 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-xl border
+                          border-line bg-black/30 p-3 text-[12px] leading-relaxed text-white/70">
+            {report}
+          </pre>
+        )}
       </Section>
 
       <Section title="Опасная зона">

@@ -1,7 +1,65 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { money, dateTime } from '../format'
-import { Spinner, Section, Empty, Row } from '../ui'
+import { Spinner, Section, Empty, Row, Btn, Input } from '../ui'
+
+/** Строка тарифа: правится на месте, без перехода на отдельный экран. */
+function PlanRow({ planKey, plan, onSaved }: {
+  planKey: string
+  plan: any
+  onSaved: (plans: any) => void
+}) {
+  const [edit, setEdit] = useState(false)
+  const [v, setV] = useState(plan)
+
+  const save = async () => {
+    const r = await api.post('/api/plans', {
+      key: planKey,
+      title: v.title,
+      price_kzt: Number(v.price_kzt),
+      seats: Number(v.seats),
+      session_limit: Number(v.session_limit),
+    })
+    onSaved(r.plans)
+    setEdit(false)
+  }
+
+  if (edit) {
+    return (
+      <div className="space-y-2 border-b border-line/60 bg-panel p-4 last:border-0">
+        <Input value={v.title} onChange={(e) => setV({ ...v, title: e.target.value })} />
+        <div className="grid grid-cols-3 gap-2">
+          <Input type="number" value={v.price_kzt}
+                 onChange={(e) => setV({ ...v, price_kzt: e.target.value })} />
+          <Input type="number" value={v.seats}
+                 onChange={(e) => setV({ ...v, seats: e.target.value })} />
+          <Input type="number" value={v.session_limit}
+                 onChange={(e) => setV({ ...v, session_limit: e.target.value })} />
+        </div>
+        <div className="flex gap-2">
+          <Btn size="sm" tone="accent" onClick={save}>Сохранить</Btn>
+          <Btn size="sm" onClick={() => { setV(plan); setEdit(false) }}>Отмена</Btn>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <button onClick={() => setEdit(true)}
+      className="flex w-full items-center justify-between gap-4 border-b border-line/60 bg-panel
+                 px-4 py-3 text-left last:border-0 hover:bg-white/[0.04]">
+      <div>
+        <div className="text-[14px]">{plan.title}</div>
+        <div className="text-[11px] text-white/35">{planKey}</div>
+      </div>
+      <div className="flex gap-6 text-right text-[13px]">
+        <div><div className="text-[11px] text-white/40">мест</div>{plan.seats}</div>
+        <div><div className="text-[11px] text-white/40">тренировок</div>{plan.session_limit}</div>
+        <div className="w-28"><div className="text-[11px] text-white/40">цена</div>{money(plan.price_kzt)}</div>
+      </div>
+    </button>
+  )
+}
 
 /** Тарифы, курс, журнал действий. */
 export default function Settings() {
@@ -22,22 +80,30 @@ export default function Settings() {
       <Section title="Тарифы">
         <div className="overflow-hidden rounded-xl border border-line">
           {Object.entries(s.plans).map(([key, p]: [string, any]) => (
-            <div key={key} className="flex items-center justify-between gap-4 border-b border-line/60 bg-panel px-4 py-3 last:border-0">
-              <div>
-                <div className="text-[14px]">{p.title}</div>
-                <div className="text-[11px] text-white/35">{key}</div>
-              </div>
-              <div className="flex gap-6 text-right text-[13px]">
-                <div><div className="text-white/40 text-[11px]">мест</div>{p.seats}</div>
-                <div><div className="text-white/40 text-[11px]">тренировок</div>{p.session_limit}</div>
-                <div className="w-28"><div className="text-white/40 text-[11px]">цена</div>{money(p.price_kzt)}</div>
-              </div>
-            </div>
+            <PlanRow key={key} planKey={key} plan={p}
+                     onSaved={(plans) => setS({ ...s, plans })} />
           ))}
         </div>
         <p className="mt-2 text-[12px] text-white/30">
-          Пока правятся в коде. Перенос в базу — в следующем этапе.
+          Изменения применяются сразу. Уже подключённым клиентам места и лимиты
+          не пересчитываются — это отдельное решение по каждому.
         </p>
+      </Section>
+
+      <Section title="Выгрузки">
+        <div className="grid gap-2 sm:grid-cols-3">
+          {[
+            { href: '/api/export/companies', title: 'Клиенты' },
+            { href: '/api/export/money', title: 'Деньги за 30 дней' },
+            { href: '/api/export/sessions', title: 'Тренировки за 90 дней' },
+          ].map((x) => (
+            <a key={x.href} href={x.href}
+               className="rounded-xl border border-line bg-panel px-4 py-3 text-center text-[13px]
+                          text-white/70 hover:bg-white/[0.04] hover:text-white">
+              {x.title}
+            </a>
+          ))}
+        </div>
       </Section>
 
       <Section title="Система">

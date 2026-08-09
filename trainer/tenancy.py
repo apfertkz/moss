@@ -417,3 +417,63 @@ def history(company_id, limit=50):
          ORDER BY created_at DESC LIMIT %s""",
         (company_id, limit),
     )
+
+
+# --- Тарифы в базе ----------------------------------------------------------
+#
+# PLANS остаётся обычным словарём: на него завязан весь код, и менять его тип
+# ради панели было бы дороже, чем поддерживать синхронизацию. База — источник
+# правды, словарь — кэш, который обновляется при старте и после правки.
+
+DEFAULT_PLANS = dict(PLANS)
+
+
+def load_plans():
+    """Подтянуть тарифы из базы в PLANS. При первом запуске засевает значения."""
+    try:
+        rows = db.query("SELECT * FROM plans ORDER BY sort, price_kzt")
+    except Exception:
+        log.exception("Не удалось прочитать тарифы — остаёмся на значениях из кода")
+        return PLANS
+
+    if not rows:
+        for i, (key, p) in enumerate(DEFAULT_PLANS.items()):
+            db.execute(
+                """INSERT INTO plans (key, title, price_kzt, seats, session_limit, sort)
+                        VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (key) DO NOTHING""",
+                (key, p["title"], p["price_kzt"], p["seats"], p["session_limit"], i),
+            )
+        log.info("Тарифы засеяны значениями из кода")
+        rows = db.query("SELECT * FROM plans ORDER BY sort, price_kzt") or []
+
+    PLANS.clear()
+    for r in rows:
+        PLANS[r["key"]] = {
+            "title": r["title"], "price_kzt": r["price_kzt"],
+            "seats": r["seats"], "session_limit": r["session_limit"],
+        }
+    return PLANS
+
+
+def save_plan(key, title=None, price_kzt=None, seats=None, session_limit=None):
+    """
+    Изменить тариф. Уже подключённым компаниям места и лимиты не пересчитываем:
+    это отдельное решение по каждому клиенту, а не побочный эффект правки цены.
+    """
+    current = PLANS.get(key, {})
+    row = db.execute(
+        """INSERT INTO plans (key, title, price_kzt, seats, session_limit)
+                VALUES (%s,%s,%s,%s,%s)
+           ON CONFLICT (key) DO UPDATE SET
+                title = EXCLUDED.title, price_kzt = EXCLUDED.price_kzt,
+                seats = EXCLUDED.seats, session_limit = EXCLUDED.session_limit
+        RETURNING *""",
+        (key,
+         title if title is not None else current.get("title", key),
+         int(price_kzt if price_kzt is not None else current.get("price_kzt", 0)),
+         int(seats if seats is not None else current.get("seats", 5)),
+         int(session_limit if session_limit is not None else current.get("session_limit", 100))),
+        returning=True,
+    )
+    load_plans()
+    return row

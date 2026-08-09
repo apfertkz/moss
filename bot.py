@@ -518,6 +518,9 @@ async def main():
     db.init_db()
     if not db.healthcheck():
         raise SystemExit("База недоступна — проверь DATABASE_URL")
+
+    # Тарифы теперь живут в базе: подтягиваем до первого обращения к ним.
+    await asyncio.get_event_loop().run_in_executor(None, tenancy.load_plans)
     me = await bot.get_me()
     log.info("Бот @%s запущен", me.username)
     await asyncio.get_event_loop().run_in_executor(None, check_models)
