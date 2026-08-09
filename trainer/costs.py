@@ -18,6 +18,31 @@ PRICES = {
 _FALLBACK = PRICES["claude-sonnet-5"]
 
 
+def text_of(resp):
+    """
+    Собрать текст из ответа модели.
+
+    Брать resp.content[0].text нельзя: современные модели кладут первым
+    блоком размышление (ThinkingBlock), у которого поля text нет вовсе.
+    На Opus 4.5 это роняло каждый ход тренажёра и подвешивало мастер брифа.
+    Правильно — пройти все блоки и склеить только текстовые.
+    """
+    parts = []
+    for block in (getattr(resp, "content", None) or []):
+        if getattr(block, "type", None) == "text":
+            t = getattr(block, "text", None)
+            if t:
+                parts.append(t)
+    if parts:
+        return "".join(parts).strip()
+    # Запасной путь для нестандартных ответов и тестовых заглушек
+    for block in (getattr(resp, "content", None) or []):
+        t = getattr(block, "text", None)
+        if t:
+            return str(t).strip()
+    return ""
+
+
 def usage_dict(resp):
     """Вытащить расход токенов из ответа SDK в обычный словарь."""
     u = getattr(resp, "usage", None)

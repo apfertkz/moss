@@ -203,11 +203,69 @@ def test_media():
     check("клиент отвечает на фото", r["buyer_messages"] == ["о, вот это второе ничего"])
     check("фото не считается простынёй", "это простыня" not in sent)
 
+    test_thinking_blocks()
+
+
+
+
+def test_thinking_blocks():
+    """
+    Регресс: модели кладут первым блоком размышление без поля text.
+    На Opus 4.5 это роняло каждый ход тренажёра.
+    """
+    print("\n11. Ответ с блоком размышления")
+    from trainer import costs
+
+    class Thinking:
+        type = "thinking"
+        thinking = "прикидываю, как ответить"
+
+    class Text:
+        type = "text"
+        def __init__(self, t): self.text = t
+
+    resp = types.SimpleNamespace(content=[Thinking(), Text('{"buyer_messages": ["ага"]}')],
+                                 usage=None)
+    check("текст достаётся из-за блока размышления",
+          costs.text_of(resp) == '{"buyer_messages": ["ага"]}')
+
+    resp2 = types.SimpleNamespace(content=[Thinking(), Text("часть один "), Text("часть два")],
+                                  usage=None)
+    check("несколько текстовых блоков склеиваются",
+          costs.text_of(resp2) == "часть один часть два")
+
+    check("пустой ответ не роняет", costs.text_of(types.SimpleNamespace(content=[])) == "")
+    check("отсутствие content не роняет", costs.text_of(types.SimpleNamespace()) == "")
+    check("только размышление → пустая строка",
+          costs.text_of(types.SimpleNamespace(content=[Thinking()])) == "")
+
+    # Полный ход через движок с таким ответом
+    profile = niche_loader.load_file_profile("moss")
+    s = make_session(profile)
+    s["scenario"]["persona"]["silence_bias"] = 0.0
+
+    class ThinkingClient:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return types.SimpleNamespace(
+                    content=[Thinking(), Text('{"buyer_messages":["почем"],"deal_state":"active"}')],
+                    usage=types.SimpleNamespace(input_tokens=10, output_tokens=5,
+                                                cache_creation_input_tokens=0,
+                                                cache_read_input_tokens=0))
+    try:
+        r = engine.step(ThinkingClient(), s, "здравствуйте")
+        ok = r["buyer_messages"] == ["почем"]
+    except Exception as e:
+        ok = False
+        print(f"      {type(e).__name__}: {e}")
+    check("ход тренажёра переживает блок размышления", ok)
+
     print("\n" + "=" * 58)
     if FAILS:
         print(f"ПРОВАЛЕНО {len(FAILS)}: " + "; ".join(FAILS))
         sys.exit(1)
-    print("Проверки медиа пройдены.")
+    print("Все проверки пройдены.")
 
 
 if __name__ == "__main__":

@@ -131,7 +131,8 @@ def _ask_claude_sync(user_id, content):
         system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=get_history(user_id),
     )
-    answer = resp.content[0].text
+    from trainer import costs
+    answer = costs.text_of(resp)
     add_to_history(user_id, "assistant", answer)
     return answer, resp
 

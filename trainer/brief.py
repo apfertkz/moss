@@ -305,7 +305,7 @@ def _generate_loop(client, w, user_content, total_usage):
                           "ответы придётся ввести заново."), total_usage
 
         total_usage = costs.add(total_usage, costs.usage_dict(resp))
-        raw = resp.content[0].text if resp.content else ""
+        raw = costs.text_of(resp)
         data = _extract_json(raw)
 
         if data is None:

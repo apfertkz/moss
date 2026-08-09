@@ -308,7 +308,7 @@ def opening_message(client, scenario, profile):
             system=_system_blocks(scenario, profile),
             messages=[{"role": "user", "content": user_content}],
         )
-        raw = resp.content[0].text if resp.content else ""
+        raw = costs.text_of(resp)
         data = _extract_json(raw)
         msgs = _messages_list(data, scenario["request"]) if data else [scenario["request"]]
         return msgs, costs.usage_dict(resp)
@@ -362,7 +362,7 @@ def step(client, session, manager_message):
         messages=[{"role": "user", "content": "\n\n".join(parts)}],
     )
     usage = costs.usage_dict(resp)
-    raw = resp.content[0].text if resp.content else ""
+    raw = costs.text_of(resp)
     data = _extract_json(raw)
 
     if not isinstance(data, dict):
@@ -459,8 +459,7 @@ def final_debrief(client, session, result):
             system=DEBRIEF_SYSTEM,
             messages=[{"role": "user", "content": user_content}],
         )
-        text = (resp.content[0].text if resp.content else "").strip()
-        return text, costs.usage_dict(resp)
+        return costs.text_of(resp), costs.usage_dict(resp)
     except Exception as e:
         log.warning("Разбор не удался: %s", e)
         return "", costs.usage_dict(None)
