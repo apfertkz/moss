@@ -30,7 +30,7 @@ from aiogram.types import (
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from . import engine, stats, tenancy, niche_loader, brief, persona, guide
+from . import engine, stats, tenancy, niche_loader, brief, persona, guide, demo
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ def register_trainer(dp, bot, client, tts=None, stt=None):
         паузой, соразмерной длине. Мгновенный ответ единым абзацем —
         главный признак, по которому тренажёр узнаётся как машина.
         """
-        uid = message.from_user.id
+        uid = message.chat.id
         for i, t in enumerate(texts):
             if not t:
                 continue
@@ -375,14 +375,25 @@ def register_trainer(dp, bot, client, tts=None, stt=None):
         )
 
     async def do_start(message: Message, u):
-        uid = message.from_user.id
+        # Вызов приходит и из обычного сообщения, и из нажатия инлайн-кнопки.
+        # Во втором случае автор сообщения — сам бот, поэтому опираемся на
+        # запись пользователя, а не на message.from_user.
+        uid = u["telegram_id"] if u else message.from_user.id
         loop = asyncio.get_event_loop()
 
-        try:
-            tenancy.check_can_train(u)
-        except tenancy.Denied as d:
-            await message.answer(str(d), reply_markup=main_reply_kb(_is_owner(u)))
-            return
+        # Демо ограничено не тарифом компании, а числом тренировок этого
+        # человека: иначе один гость выжигает лимит для всех остальных.
+        if demo.is_demo(u):
+            if await loop.run_in_executor(None, demo.left, uid) <= 0:
+                text = await loop.run_in_executor(None, demo.tail, uid)
+                await message.answer(text, reply_markup=main_reply_kb(False))
+                return
+        else:
+            try:
+                tenancy.check_can_train(u)
+            except tenancy.Denied as d:
+                await message.answer(str(d), reply_markup=main_reply_kb(_is_owner(u)))
+                return
 
         profile = await loop.run_in_executor(None, niche_loader.active_profile, u["company_id"])
         if not profile:
@@ -441,6 +452,26 @@ def register_trainer(dp, bot, client, tts=None, stt=None):
         u = await _user(callback)
         await do_menu(callback.message, u)
         await callback.answer()
+
+    @dp.callback_query(F.data == "demo_go")
+    async def demo_start_cb(callback: CallbackQuery):
+        """Гость с сайта нажал «Попробовать демо»."""
+        loop = asyncio.get_event_loop()
+        tg = callback.from_user
+        u = await loop.run_in_executor(
+            None, demo.join, tg.id, tg.full_name, tg.username)
+
+        if not u:
+            await callback.answer()
+            await callback.message.answer(
+                "Ваш аккаунт уже привязан к компании — демо не нужно. "
+                "Жмите «🎯 Тренажёр».",
+                reply_markup=main_reply_kb(False))
+            return
+
+        await callback.answer()
+        await callback.message.answer(demo.START, reply_markup=main_reply_kb(False))
+        await do_start(callback.message, u)
 
     @dp.message(F.text.in_({BTN_TRAINER, BTN_NEW}))
     async def btn_new(message: Message):
@@ -762,6 +793,13 @@ def register_trainer(dp, bot, client, tts=None, stt=None):
 
         if debrief:
             await safe_answer(message, f"🧠 *Разбор*\n\n{debrief}", parse_mode="Markdown")
+
+        if demo.is_demo(u):
+            # В демо считаем не лимит компании, а сколько попыток осталось
+            # лично у гостя, и в конце зовём оставить заявку.
+            await message.answer(await loop.run_in_executor(None, demo.tail, uid),
+                                 reply_markup=trainer_reply_kb())
+            return
 
         warn = tenancy.usage_warning(used, limit)
         tail = "\n\n" + warn if warn else ""

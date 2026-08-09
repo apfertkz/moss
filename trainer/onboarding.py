@@ -14,7 +14,7 @@ Telegram передаёт в /start произвольную нагрузку: t
 
 import logging
 
-from . import tenancy
+from . import tenancy, demo
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,13 @@ def redeem(payload, telegram_id, full_name=None, username=None):
     kind, code = parse_payload(payload)
     if not kind:
         return None, None, False
+
+    # Гость мог до этого гонять демо. Пока он числится менеджером служебной
+    # компании, привязать его к настоящей нельзя — сначала выпускаем.
+    try:
+        demo.release(telegram_id)
+    except Exception:
+        log.exception("Не удалось выпустить пользователя из демо")
 
     if kind == "manager":
         company = tenancy.company_by_invite_code(code)
@@ -90,10 +97,14 @@ def redeem(payload, telegram_id, full_name=None, username=None):
 
 
 def welcome_unbound():
-    """Текст для того, кто пришёл в бота без кода."""
-    return (
-        "Это MOSS SALE — тренажёр отдела продаж.\n\n"
-        "Доступ выдаёт компания. Если ваша уже подключена — попросите руководителя "
-        "прислать ссылку-приглашение.\n\n"
-        "Если хотите подключить свой отдел — оставьте заявку на moss-sale.kz"
+    """
+    Текст для того, кто пришёл в бота без кода.
+
+    Раньше здесь была глухая стена «доступ выдаёт компания», и человек с сайта
+    уходил ни с чем. Теперь это приглашение попробовать: кнопку демо
+    подставляет вызывающая сторона.
+    """
+    return demo.INTRO + (
+        "\n\nЕсли ваша компания уже подключена — попросите руководителя "
+        "прислать ссылку-приглашение."
     )

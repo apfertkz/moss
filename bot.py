@@ -31,7 +31,7 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from trainer import register_trainer, main_reply_kb, db, tenancy, onboarding, stats, guide
+from trainer import register_trainer, main_reply_kb, db, tenancy, onboarding, stats, guide, demo
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -101,11 +101,20 @@ async def current_user(tg_id):
     return await loop.run_in_executor(None, tenancy.get_user, tg_id)
 
 
+def demo_kb():
+    """Кнопка, с которой начинается демо для гостя с сайта."""
+    b = InlineKeyboardBuilder()
+    b.button(text="▶️ Попробовать демо", callback_data="demo_go")
+    return b.as_markup()
+
+
 async def guard(message: Message):
     """Пускать только привязанных к компании. Возвращает пользователя либо None."""
     u = await current_user(message.from_user.id)
     if not u:
-        await message.answer(onboarding.welcome_unbound())
+        # Не стена, а приглашение: гость с сайта должен уйти отсюда
+        # с проведённой тренировкой, а не с отказом.
+        await message.answer(onboarding.welcome_unbound(), reply_markup=demo_kb())
         return None
     if not u["active"]:
         await message.answer("Ваш доступ отключён руководителем.")
@@ -209,7 +218,8 @@ async def start_deeplink(message: Message, command: CommandObject):
         message.from_user.full_name, message.from_user.username)
 
     if not ok:
-        await message.answer(text or onboarding.welcome_unbound())
+        await message.answer(text or onboarding.welcome_unbound(),
+                             reply_markup=demo_kb())
         return
 
     conversations[message.from_user.id] = []

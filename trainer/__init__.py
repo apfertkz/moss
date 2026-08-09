@@ -22,9 +22,10 @@ telegram_id пользователя, профиль ниши и статист�
 """
 
 from .handlers import register_trainer, main_reply_kb, trainer_reply_kb
-from . import db, tenancy, onboarding, niche_loader, stats, engine, costs, brief, persona, guide
+from . import db, tenancy, onboarding, niche_loader, stats, engine, costs, brief, persona, guide, demo
 
 __all__ = [
+    "demo",
     "register_trainer", "main_reply_kb", "trainer_reply_kb",
     "db", "tenancy", "onboarding", "niche_loader", "stats", "engine", "costs", "brief",
     "persona", "guide",
