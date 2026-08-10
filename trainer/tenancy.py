@@ -477,3 +477,112 @@ def save_plan(key, title=None, price_kzt=None, seats=None, session_limit=None):
     )
     load_plans()
     return row
+
+
+# --- Сроки оплаты -----------------------------------------------------------
+#
+# Помесячная оплата продаёт продукт заново каждые тридцать дней, а внедрение
+# столько не занимает. Длинные сроки покупают время: три месяца — это ровно
+# столько, сколько нужно, чтобы отдел дошёл до первых цифр, а цифры продлевают
+# подписку сами.
+#
+# Скидка растёт со сроком: минус десять, пятнадцать и двадцать пять процентов.
+
+TERMS = (1, 3, 6, 12)
+
+DEFAULT_PRICES = {
+    "start": {1: 49000,  3: 132000, 6: 249000,  12: 440000},
+    "team":  {1: 99000,  3: 267000, 6: 504000,  12: 890000},
+    "dept":  {1: 199000, 3: 537000, 6: 1014000, 12: 1790000},
+    "trial": {1: 0},
+}
+
+# plan_key -> {months: price}. Кэш поверх базы, как и PLANS.
+PRICES = {}
+
+
+def load_prices():
+    """Подтянуть цены по срокам. При первом запуске засевает значения."""
+    try:
+        rows = db.query("SELECT * FROM plan_prices")
+    except Exception:
+        log.exception("Не удалось прочитать цены — остаёмся на значениях из кода")
+        PRICES.update({k: dict(v) for k, v in DEFAULT_PRICES.items()})
+        return PRICES
+
+    if not rows:
+        for plan, terms in DEFAULT_PRICES.items():
+            for months, price in terms.items():
+                db.execute(
+                    """INSERT INTO plan_prices (plan_key, months, price_kzt)
+                            VALUES (%s,%s,%s) ON CONFLICT DO NOTHING""",
+                    (plan, months, price),
+                )
+        log.info("Цены по срокам засеяны значениями из кода")
+        rows = db.query("SELECT * FROM plan_prices") or []
+
+    PRICES.clear()
+    for r in rows:
+        PRICES.setdefault(r["plan_key"], {})[int(r["months"])] = int(r["price_kzt"])
+    return PRICES
+
+
+def save_price(plan_key, months, price_kzt):
+    db.execute(
+        """INSERT INTO plan_prices (plan_key, months, price_kzt) VALUES (%s,%s,%s)
+           ON CONFLICT (plan_key, months) DO UPDATE SET price_kzt = EXCLUDED.price_kzt""",
+        (plan_key, int(months), int(price_kzt)),
+    )
+    load_prices()
+    return PRICES.get(plan_key, {})
+
+
+def price_for(plan_key, months):
+    """Цена срока. Если срок не задан явно — считаем по месячной без скидки."""
+    terms = PRICES.get(plan_key) or DEFAULT_PRICES.get(plan_key) or {}
+    if months in terms:
+        return terms[months]
+    monthly = terms.get(1) or PLANS.get(plan_key, {}).get("price_kzt", 0)
+    return monthly * months
+
+
+def extend_months(company_id, months=1, reset_usage=True):
+    """
+    Продлить на календарные месяцы.
+
+    Именно месяцы, а не тридцать дней: клиент, оплативший год 31 января,
+    заметит, что доступ кончился на пять дней раньше обещанного.
+
+    Срок считается от большей из дат — текущего окончания или сегодня,
+    иначе продление просроченной подписки съедало бы дни простоя.
+    """
+    return db.execute(
+        """UPDATE companies
+              SET expires_at = GREATEST(COALESCE(expires_at, now()), now())
+                               + (%s || ' months')::interval,
+                  status = CASE WHEN status = %s THEN %s ELSE status END,
+                  sessions_used = CASE WHEN %s THEN 0 ELSE sessions_used END,
+                  period_started_at = CASE WHEN %s THEN now() ELSE period_started_at END
+            WHERE id = %s
+        RETURNING *""",
+        (str(int(months)), STATUS_SUSPENDED, STATUS_ACTIVE, reset_usage, reset_usage, company_id),
+        returning=True,
+    )
+
+
+# --- Поступления ------------------------------------------------------------
+
+def record_payment(company_id, months, amount_kzt, plan=None, note=None):
+    """Записать оплату. Сумма может отличаться от прайса — бывают договорённости."""
+    return db.execute(
+        """INSERT INTO payments (company_id, plan, months, amount_kzt, note)
+                VALUES (%s,%s,%s,%s,%s) RETURNING *""",
+        (company_id, plan, int(months), int(amount_kzt), note), returning=True,
+    )
+
+
+def payments_of(company_id, limit=20):
+    return db.query(
+        "SELECT * FROM payments WHERE company_id=%s ORDER BY created_at DESC LIMIT %s",
+        (company_id, limit),
+    ) or []

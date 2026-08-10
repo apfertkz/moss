@@ -39,11 +39,12 @@ def overview():
     ) or []
 
     by_status = {}
-    revenue = 0
     for row in companies:
         by_status[row["status"]] = by_status.get(row["status"], 0) + row["n"]
-        if row["status"] == tenancy.STATUS_ACTIVE:
-            revenue += tenancy.PLANS.get(row["plan"], {}).get("price_kzt", 0) * row["n"]
+
+    # Выручку берём из платежей, а не из прайса: иначе индивидуальные
+    # договорённости и длинные сроки показывали бы неправду.
+    revenue = mrr()
 
     sessions = db.query(
         """SELECT COUNT(*) AS total,
@@ -220,6 +221,8 @@ def company(company_id):
     card["team"] = [dict(t) for t in (tenancy.team(company_id) or [])]
     card["history"] = [dict(h) for h in (tenancy.history(company_id, 30) or [])]
     card["profile"] = _profile_brief(company_id)
+    card["payments"] = [dict(p) for p in tenancy.payments_of(company_id)]
+    card["prices"] = tenancy.PRICES.get(card["plan"]) or {}
     return card
 
 
@@ -337,6 +340,36 @@ def demo_queue(limit=100):
 
 # --- Деньги -----------------------------------------------------------------
 
+def mrr():
+    """
+    Выручка в пересчёте на месяц.
+
+    Годовой платёж делится на двенадцать: без этого месяц с удачной
+    предоплатой выглядит как рост, а следующий — как обвал.
+    Считаем только по действующим подпискам.
+    """
+    row = db.query(
+        """SELECT COALESCE(SUM(p.amount_kzt::numeric / GREATEST(p.months,1)), 0) AS v
+             FROM payments p
+             JOIN companies c ON c.id = p.company_id
+            WHERE c.status = %s
+              AND p.created_at = (SELECT MAX(created_at) FROM payments x
+                                   WHERE x.company_id = p.company_id)""",
+        (tenancy.STATUS_ACTIVE,), one=True,
+    ) or {}
+    return round(float(row.get("v") or 0))
+
+
+def income(days=30):
+    """Сколько реально пришло за период — с пиками в месяцы продлений."""
+    row = db.query(
+        """SELECT COALESCE(SUM(amount_kzt),0) AS v, COUNT(*) AS n
+             FROM payments WHERE created_at > now() - (%s || ' days')::interval""",
+        (str(days),), one=True,
+    ) or {}
+    return {"amount_kzt": int(row.get("v") or 0), "count": int(row.get("n") or 0)}
+
+
 def money(days=30):
     """
     Расход и маржа по каждому клиенту. Здесь становится видно,
@@ -356,10 +389,22 @@ def money(days=30):
         (str(days), str(days)),
     ) or []
 
+    # Последний платёж по каждой компании: он показывает, за что клиент
+    # платит на самом деле, включая индивидуальные договорённости.
+    paid = {}
+    for r in (db.query(
+        """SELECT DISTINCT ON (company_id) company_id, amount_kzt, months
+             FROM payments ORDER BY company_id, created_at DESC""") or []):
+        paid[r["company_id"]] = (int(r["amount_kzt"]), max(1, int(r["months"])))
+
     out = []
     for r in rows:
         spend = _kzt(r["usd"])
-        price = tenancy.PLANS.get(r["plan"], {}).get("price_kzt", 0)
+        if r["id"] in paid:
+            amount, months = paid[r["id"]]
+            price = round(amount / months)
+        else:
+            price = tenancy.PLANS.get(r["plan"], {}).get("price_kzt", 0)
         revenue = price if r["status"] == tenancy.STATUS_ACTIVE else 0
         sessions = int(r.get("sessions") or 0)
         out.append({
@@ -386,6 +431,8 @@ def money(days=30):
                       "calls": int(r["calls"])} for r in by_model],
         "total_spend_kzt": sum(x["spend_kzt"] for x in out),
         "total_revenue_kzt": sum(x["revenue_kzt"] for x in out),
+        "mrr_kzt": mrr(),
+        "income": income(days),
     }
 
 

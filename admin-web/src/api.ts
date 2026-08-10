@@ -64,6 +64,18 @@ export type Company = {
   team?: TeamMember[]
   history?: LogEntry[]
   profile?: { title: string; statuses: number; requests: number; created_at: string } | null
+  payments?: Payment[]
+  /** Цены по срокам для текущего тарифа: {месяцев: цена} */
+  prices?: Record<string, number>
+}
+
+export type Payment = {
+  id: number
+  amount_kzt: number
+  months: number
+  plan: string | null
+  note: string | null
+  created_at: string
 }
 
 export type TeamMember = {

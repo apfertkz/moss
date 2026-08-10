@@ -251,7 +251,21 @@ def build_app(bot):
         what = request.match_info["action"]
         d = await body(request)
 
+        def extend_term():
+            """Продлить на срок и записать поступление."""
+            months = int(d.get("months", 1))
+            company = tenancy.get_company(cid)
+            plan = company["plan"] if company else None
+            amount = d.get("amount_kzt")
+            if amount is None:
+                amount = tenancy.price_for(plan, months)
+            tenancy.extend_months(cid, months)
+            if int(amount) > 0 or d.get("note"):
+                tenancy.record_payment(cid, months, int(amount), plan, d.get("note"))
+            return True
+
         actions = {
+            "term":     extend_term,
             "extend":   lambda: tenancy.extend(cid, int(d.get("days", 30))),
             "plan":     lambda: tenancy.change_plan(cid, d.get("plan")),
             "seats":    lambda: tenancy.add_seats(cid, int(d.get("n", 1))),
@@ -420,6 +434,17 @@ def build_app(bot):
         await in_thread(tenancy.log_action, actor(request), "plan.save", None, None, d)
         return jsonify({"plans": tenancy.PLANS})
 
+    async def price_save(request):
+        """Цена конкретного срока конкретного тарифа."""
+        d = await body(request)
+        key = (d.get("key") or "").strip()
+        months = int(d.get("months", 0))
+        if not key or months <= 0:
+            return jsonify({"error": "Нужны тариф и срок"}, 400)
+        await in_thread(tenancy.save_price, key, months, int(d.get("price_kzt", 0)))
+        await in_thread(tenancy.log_action, actor(request), "price.save", None, None, d)
+        return jsonify({"prices": tenancy.PRICES})
+
     async def export(request):
         """Выгрузки в CSV. Имя файла с датой — иначе в папке каша."""
         what = request.match_info["what"]
@@ -466,6 +491,8 @@ def build_app(bot):
     async def settings(request):
         return jsonify({
             "plans": tenancy.PLANS,
+            "prices": tenancy.PRICES,
+            "terms": list(tenancy.TERMS),
             "usd_kzt": admin_data.USD_KZT,
             "demo_limit": demo.LIMIT,
             "segments": admin_data.SEGMENTS,
@@ -514,6 +541,7 @@ def build_app(bot):
     r.add_get("/api/log", log_tail)
     r.add_get("/api/settings", settings)
     r.add_post("/api/plans", plan_save)
+    r.add_post("/api/prices", price_save)
     r.add_get("/api/export/{what}", export)
 
     r.add_post("/api/broadcast/preview", broadcast_preview)

@@ -521,6 +521,7 @@ async def main():
 
     # Тарифы теперь живут в базе: подтягиваем до первого обращения к ним.
     await asyncio.get_event_loop().run_in_executor(None, tenancy.load_plans)
+    await asyncio.get_event_loop().run_in_executor(None, tenancy.load_prices)
     me = await bot.get_me()
     log.info("Бот @%s запущен", me.username)
     await asyncio.get_event_loop().run_in_executor(None, check_models)

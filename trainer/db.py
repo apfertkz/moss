@@ -216,7 +216,31 @@ CREATE TABLE IF NOT EXISTS plans (
     session_limit INTEGER NOT NULL DEFAULT 100,
     sort          INTEGER NOT NULL DEFAULT 0
 );
+
+-- Цены по срокам. Длинный срок покупается не ради скидки, а ради времени
+-- на внедрение: клиент, оплативший месяц, отваливается ровно тогда, когда
+-- у него не дошли руки подключить менеджеров.
+CREATE TABLE IF NOT EXISTS plan_prices (
+    plan_key  TEXT    NOT NULL,
+    months    INTEGER NOT NULL,
+    price_kzt INTEGER NOT NULL,
+    PRIMARY KEY (plan_key, months)
+);
+
+-- Поступления. Без них выручка считалась бы по прайсу, а не по тому, что
+-- реально заплатили: любая индивидуальная скидка ломала бы всю отчётность.
+CREATE TABLE IF NOT EXISTS payments (
+    id         BIGSERIAL   PRIMARY KEY,
+    company_id BIGINT      NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    plan       TEXT,
+    months     INTEGER     NOT NULL DEFAULT 1,
+    amount_kzt INTEGER     NOT NULL DEFAULT 0,
+    note       TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_payments_company ON payments(company_id, created_at DESC);
 """
+
 
 
 

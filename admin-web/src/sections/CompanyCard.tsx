@@ -15,6 +15,9 @@ export default function CompanyCard({
   const [plan, setPlan] = useState('')
   const [copied, setCopied] = useState('')
   const [report, setReport] = useState('')
+  const [custom, setCustom] = useState(false)
+  const [months, setMonths] = useState(3)
+  const [amount, setAmount] = useState('')
 
   const load = () => api.get(`/api/companies/${id}`).then((r) => { setC(r); setPlan(r.plan) })
   useEffect(() => { setC(null); load().catch(() => {}) }, [id])
@@ -64,11 +67,41 @@ export default function CompanyCard({
           {c.contact_email && <Row label="Почта">{c.contact_email}</Row>}
         </div>
 
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          <Btn size="sm" tone="accent" onClick={() => act('extend', { days: 30 })}>+30 дней</Btn>
-          <Btn size="sm" onClick={() => act('extend', { days: 90 })}>+90 дней</Btn>
-          <Btn size="sm" onClick={() => act('extend', { days: 365 })}>+год</Btn>
+        {/* Продление сроками: цена подставляется из прайса, но её можно
+            поправить — договорённости бывают индивидуальными. */}
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {[1, 3, 6, 12].map((m) => {
+            const price = (c.prices || {})[m]
+            return (
+              <Btn key={m} size="sm" tone={m === 3 ? 'accent' : 'ghost'}
+                   onClick={() => act('term', { months: m })}>
+                <span className="flex flex-col items-center leading-tight">
+                  <span>{m === 1 ? 'Месяц' : m === 12 ? 'Год' : `${m} месяца`}</span>
+                  {price ? <span className="text-[10px] opacity-60">{money(price)}</span> : null}
+                </span>
+              </Btn>
+            )
+          })}
         </div>
+        <button onClick={() => setCustom(!custom)}
+                className="mt-2 w-full py-1 text-[11px] text-white/30 hover:text-white/60">
+          Своя сумма или срок
+        </button>
+        {custom && (
+          <div className="mt-2 space-y-2 rounded-xl border border-line bg-panel p-3">
+            <div className="grid grid-cols-2 gap-2">
+              <Select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
+                {[1, 3, 6, 12].map((m) => <option key={m} value={m}>{m} мес</option>)}
+              </Select>
+              <Input type="number" placeholder="Сумма, ₸" value={amount}
+                     onChange={(e) => setAmount(e.target.value)} />
+            </div>
+            <Btn size="sm" full tone="accent"
+                 onClick={() => act('term', { months, amount_kzt: Number(amount || 0) })}>
+              Продлить и записать оплату
+            </Btn>
+          </div>
+        )}
       </Section>
 
       <Section title="Объём">
@@ -174,6 +207,22 @@ export default function CompanyCard({
           ))}
           <Btn size="sm" full onClick={() => act('rotate')}>Перевыпустить приглашение</Btn>
         </div>
+      </Section>
+
+      <Section title="Поступления">
+        {!c.payments?.length ? <Empty>Оплат ещё не было</Empty> : (
+          <div className="overflow-hidden rounded-xl border border-line">
+            {c.payments.map((p) => (
+              <div key={p.id}
+                   className="flex items-baseline justify-between gap-3 border-b border-line/60
+                              bg-panel px-3.5 py-2.5 text-[13px] last:border-0">
+                <span>{money(p.amount_kzt)}</span>
+                <span className="text-[12px] text-white/40">{p.months} мес</span>
+                <span className="text-[12px] text-white/30">{date(p.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </Section>
 
       <Section title="Отчёт для клиента">

@@ -22,8 +22,13 @@ log = logging.getLogger(__name__)
 
 ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
 
-# За сколько дней предупреждаем. Три точки: заметить, вспомнить, успеть.
+# За сколько дней предупреждаем. Для коротких подписок трёх точек хватает,
+# для годовых нужен запас: решение продлить на год не принимается за сутки.
 STEPS = (7, 3, 1)
+LONG_STEPS = (30, 14, 7, 1)
+
+# С какого срока подписка считается длинной.
+LONG_TERM_DAYS = 150
 
 # Как часто просыпается фоновая проверка.
 INTERVAL_HOURS = 6
@@ -61,14 +66,42 @@ def _mark(company_id, kind, period_end):
     )
 
 
+def _steps_for(company):
+    """
+    Длинной подписке нужен более ранний первый сигнал: годовое продление
+    согласовывают неделями, а не в день окончания.
+    """
+    from . import tenancy
+    total = company.get("expires_at") and company.get("created_at")
+    if total and (company["expires_at"] - company["created_at"]).days >= LONG_TERM_DAYS:
+        return LONG_STEPS
+    return STEPS
+
+
+def _price_hint(company):
+    """Сколько стоит продлить — чтобы человеку не пришлось спрашивать."""
+    from . import tenancy
+    terms = tenancy.PRICES.get(company.get("plan")) or {}
+    if not terms:
+        return ""
+    parts = []
+    for months in sorted(terms):
+        if months == 1 or not terms[months]:
+            continue
+        parts.append(f"{months} мес — {terms[months]:,} ₸".replace(",", " "))
+    return ("\n\nПродление: " + ", ".join(parts)) if parts else ""
+
+
 def _text_for_owner(company, days):
     title = company["title"]
+    hint = _price_hint(company)
     if days <= 1:
         return (f"⏳ Доступ для *{title}* заканчивается завтра.\n\n"
                 f"После этого менеджеры не смогут тренироваться. "
-                f"Напишите нам, чтобы продлить.")
+                f"Напишите нам, чтобы продлить.{hint}")
     return (f"⏳ Доступ для *{title}* заканчивается через {days} дн.\n\n"
-            f"Чтобы отдел не остался без тренировок, продлите заранее — напишите нам.")
+            f"Чтобы отдел не остался без тренировок, продлите заранее — "
+            f"напишите нам.{hint}")
 
 
 async def run_reminders(bot):
@@ -76,7 +109,7 @@ async def run_reminders(bot):
     sent = 0
     try:
         soon = await asyncio.get_event_loop().run_in_executor(
-            None, tenancy.expiring, max(STEPS))
+            None, tenancy.expiring, max(LONG_STEPS))
     except Exception:
         log.exception("Не удалось получить список истекающих подписок")
         return 0
@@ -85,7 +118,7 @@ async def run_reminders(bot):
         days = tenancy.days_left(company)
         if days is None:
             continue
-        step = next((s for s in STEPS if days <= s), None)
+        step = next((s for s in _steps_for(company) if days <= s), None)
         if step is None:
             continue
 

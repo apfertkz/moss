@@ -29,8 +29,11 @@ export default function Money({ onOpen }: { onOpen: (id: number) => void }) {
         ))}
       </div>
 
-      <div className="mb-6 grid grid-cols-3 gap-3">
-        <Stat label="Выручка" value={money(d.total_revenue_kzt)} />
+      <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat label="Поступило за период" value={money(d.income?.amount_kzt)}
+              hint={`${d.income?.count || 0} оплат`} />
+        <Stat label="Выручка в месяц" value={money(d.mrr_kzt)}
+              hint="длинные сроки поделены" />
         <Stat label="Расход" value={money(d.total_spend_kzt)} />
         <Stat label="Маржа" value={money(margin)} tone={margin >= 0 ? 'ok' : 'bad'} />
       </div>

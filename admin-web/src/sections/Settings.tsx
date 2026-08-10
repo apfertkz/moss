@@ -3,6 +3,43 @@ import { api } from '../api'
 import { money, dateTime } from '../format'
 import { Spinner, Section, Empty, Row, Btn, Input } from '../ui'
 
+/** Ячейка цены: правится прямо в таблице, сохраняется по Enter или уходу фокуса. */
+function PriceCell({ planKey, months, value, onSaved }: {
+  planKey: string
+  months: number
+  value: number | undefined
+  onSaved: (prices: any) => void
+}) {
+  const [v, setV] = useState(value ?? '')
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    if (String(v) === String(value ?? '')) return
+    setBusy(true)
+    try {
+      const r = await api.post('/api/prices', {
+        key: planKey, months, price_kzt: Number(v || 0),
+      })
+      onSaved(r.prices)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <input
+      value={v}
+      onChange={(e) => setV(e.target.value.replace(/\D/g, ''))}
+      onBlur={save}
+      onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+      placeholder="—"
+      className={`w-full rounded-lg border border-transparent bg-transparent px-2 py-1.5
+                  text-right text-[13px] hover:border-line focus:border-acc/50 focus:bg-black/30
+                  ${busy ? 'opacity-40' : ''}`}
+    />
+  )
+}
+
 /** Строка тарифа: правится на месте, без перехода на отдельный экран. */
 function PlanRow({ planKey, plan, onSaved }: {
   planKey: string
@@ -87,6 +124,41 @@ export default function Settings() {
         <p className="mt-2 text-[12px] text-white/30">
           Изменения применяются сразу. Уже подключённым клиентам места и лимиты
           не пересчитываются — это отдельное решение по каждому.
+        </p>
+      </Section>
+
+      <Section title="Цены по срокам">
+        <div className="overflow-x-auto rounded-xl border border-line">
+          <table className="w-full min-w-[520px] text-left text-[13px]">
+            <thead>
+              <tr className="border-b border-line text-[11px] uppercase tracking-[0.1em] text-white/35">
+                <th className="px-4 py-3 font-normal">Тариф</th>
+                {(s.terms || [1, 3, 6, 12]).map((m: number) => (
+                  <th key={m} className="px-4 py-3 text-right font-normal">
+                    {m === 1 ? 'месяц' : m === 12 ? 'год' : `${m} мес`}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(s.plans).map(([key, p]: [string, any]) => (
+                <tr key={key} className="border-b border-line/60 bg-panel last:border-0">
+                  <td className="px-4 py-2.5">{p.title}</td>
+                  {(s.terms || [1, 3, 6, 12]).map((m: number) => (
+                    <td key={m} className="px-2 py-2">
+                      <PriceCell planKey={key} months={m}
+                                 value={(s.prices?.[key] || {})[m]}
+                                 onSaved={(prices) => setS({ ...s, prices })} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-[12px] text-white/30">
+          Скидка за срок: три месяца −10%, полгода −15%, год −25%.
+          Пустая ячейка означает, что срок считается по месячной цене без скидки.
         </p>
       </Section>
 
