@@ -21,14 +21,31 @@ from . import db
 log = logging.getLogger(__name__)
 
 # --- Тарифы -----------------------------------------------------------------
+#
+# Один тариф на всех, разница только в сроке оплаты.
+#
+# Тарифы по числу мест были ошибкой: место нам ничего не стоит, расход
+# создают тренировки. Мы брали деньги за бесплатное и штрафовали клиента
+# ровно за то поведение, которое нам нужно, — за подключение ещё одного
+# менеджера. Он его не подключал, отдел не тренировался, через месяц не
+# продлевал. Теперь ограничитель один и он же источник расхода — лимит
+# тренировок; мест хватает на типовой отдел, а кому мало, тем считаем руками.
+#
 # seats — сколько менеджеров можно завести, session_limit — тренировок в месяц.
 PLANS = {
-    "start":  {"title": "Старт",   "price_kzt": 49000,  "seats": 5,  "session_limit": 100},
-    "team":   {"title": "Команда", "price_kzt": 99000,  "seats": 15, "session_limit": 300},
-    "dept":   {"title": "Отдел",   "price_kzt": 199000, "seats": 40, "session_limit": 800},
-    "trial":  {"title": "Пилот",   "price_kzt": 0,      "seats": 5,  "session_limit": 50},
+    "base":  {"title": "Отдел", "price_kzt": 79000, "seats": 8, "session_limit": 200},
+    "trial": {"title": "Пилот", "price_kzt": 0,     "seats": 5, "session_limit": 50},
 }
 DEFAULT_PLAN = "trial"
+
+# Тарифы, от которых отказались. Компании на них переводим на базовый,
+# сохраняя уже выданные места и лимиты: клиент купил их за свои деньги.
+LEGACY_PLANS = ("start", "team", "dept")
+
+# Сколько просить за человека сверх восьмого. В коде не применяется —
+# места добавляются из панели вручную; это ориентир, чтобы на переговорах
+# не придумывать цифру заново.
+EXTRA_SEAT_KZT = 8000
 
 # Длина оплаченного периода. Счётчик тренировок обнуляется, когда он истёк.
 PERIOD_DAYS = 30
@@ -428,6 +445,46 @@ def history(company_id, limit=50):
 DEFAULT_PLANS = dict(PLANS)
 
 
+def retire_legacy_plans():
+    """
+    Перевести базу со сетки по местам на единый тариф.
+
+    Выполняется один раз и сама себя выключает: если старых тарифов в базе
+    нет, ничего не делает. Отдельной миграции ради этого заводить не стали —
+    шаг ровно один, а лишний механизм пришлось бы поддерживать всегда.
+
+    Места и лимиты компаний не трогаем. Клиент на «Отделе» купил сорок мест
+    за свои деньги; перевод на базовый тариф урезал бы его до восьми — это
+    было бы не переименование, а отъём оплаченного.
+    """
+    stale = db.query("SELECT key FROM plans WHERE key = ANY(%s)", (list(LEGACY_PLANS),))
+    if not stale:
+        return False
+
+    base = DEFAULT_PLANS["base"]
+    db.execute(
+        """INSERT INTO plans (key, title, price_kzt, seats, session_limit, sort)
+                VALUES (%s,%s,%s,%s,%s,0)
+           ON CONFLICT (key) DO NOTHING""",
+        ("base", base["title"], base["price_kzt"], base["seats"], base["session_limit"]),
+    )
+    for months, price in DEFAULT_PRICES["base"].items():
+        db.execute(
+            """INSERT INTO plan_prices (plan_key, months, price_kzt) VALUES (%s,%s,%s)
+               ON CONFLICT (plan_key, months) DO NOTHING""",
+            ("base", months, price),
+        )
+
+    moved = db.query(
+        "UPDATE companies SET plan='base' WHERE plan = ANY(%s) RETURNING id",
+        (list(LEGACY_PLANS),),
+    ) or []
+    db.execute("DELETE FROM plan_prices WHERE plan_key = ANY(%s)", (list(LEGACY_PLANS),))
+    db.execute("DELETE FROM plans WHERE key = ANY(%s)", (list(LEGACY_PLANS),))
+    log.info("Старые тарифы убраны, компаний переведено: %s", len(moved))
+    return True
+
+
 def load_plans():
     """Подтянуть тарифы из базы в PLANS. При первом запуске засевает значения."""
     try:
@@ -444,6 +501,8 @@ def load_plans():
                 (key, p["title"], p["price_kzt"], p["seats"], p["session_limit"], i),
             )
         log.info("Тарифы засеяны значениями из кода")
+        rows = db.query("SELECT * FROM plans ORDER BY sort, price_kzt") or []
+    elif retire_legacy_plans():
         rows = db.query("SELECT * FROM plans ORDER BY sort, price_kzt") or []
 
     PLANS.clear()
@@ -490,10 +549,11 @@ def save_plan(key, title=None, price_kzt=None, seats=None, session_limit=None):
 
 TERMS = (1, 3, 6, 12)
 
+# Скидка за срок — единственное, чем отличаются предложения. Числа круглые
+# намеренно: 213 000 читается как результат работы калькулятора, 210 000 —
+# как решение.
 DEFAULT_PRICES = {
-    "start": {1: 49000,  3: 132000, 6: 249000,  12: 440000},
-    "team":  {1: 99000,  3: 267000, 6: 504000,  12: 890000},
-    "dept":  {1: 199000, 3: 537000, 6: 1014000, 12: 1790000},
+    "base":  {1: 79000, 3: 210000, 6: 400000, 12: 700000},
     "trial": {1: 0},
 }
 

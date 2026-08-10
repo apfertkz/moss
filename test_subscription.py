@@ -29,7 +29,7 @@ class FakeDB:
 
     def __init__(self):
         self.company = {
-            "id": 1, "title": "Тест", "plan": "start", "seats": 5,
+            "id": 1, "title": "Тест", "plan": "base", "seats": 5,
             "session_limit": 100, "sessions_used": 0,
             "period_started_at": now(), "expires_at": now() + datetime.timedelta(days=30),
             "status": "active", "activation_code": "AAA", "invite_code": "BBB",
@@ -154,17 +154,17 @@ def main():
     check("продление снимает приостановку", c["status"] == t.STATUS_ACTIVE)
 
     print("\n5. Тариф, места, пакеты")
-    c = t.change_plan(1, "team")
-    check("тариф сменился", c["plan"] == "team")
-    check("места подтянулись", c["seats"] == t.PLANS["team"]["seats"])
-    check("лимит подтянулся", c["session_limit"] == t.PLANS["team"]["session_limit"])
+    c = t.change_plan(1, "base")
+    check("тариф сменился", c["plan"] == "base")
+    check("места подтянулись", c["seats"] == t.PLANS["base"]["seats"])
+    check("лимит подтянулся", c["session_limit"] == t.PLANS["base"]["session_limit"])
     try:
         t.change_plan(1, "неведомый")
         check("несуществующий тариф отвергается", False)
     except ValueError:
         check("несуществующий тариф отвергается", True)
 
-    check("места добавляются", t.add_seats(1, 5)["seats"] == t.PLANS["team"]["seats"] + 5)
+    check("места добавляются", t.add_seats(1, 5)["seats"] == t.PLANS["base"]["seats"] + 5)
     check("места не уходят в минус", t.add_seats(1, -999)["seats"] == 1)
     base = fake.company["session_limit"]
     check("пакет тренировок добавляется", t.add_sessions(1, 50)["session_limit"] == base + 50)
