@@ -75,14 +75,21 @@ class LegacyDB:
 
     def __init__(self):
         self.plans = [{"key": k} for k in ("start", "team", "dept")]
-        self.prices = [{"plan_key": "dept", "months": 12, "price_kzt": 1790000}]
+        self.prices = [{"plan_key": "dept", "months": 12, "price_kzt": 1790000},
+                       {"plan_key": "base", "months": 6, "price_kzt": 400000}]
         self.companies = [{"id": 1, "plan": "dept", "seats": 40},
                           {"id": 2, "plan": "team", "seats": 15}]
 
     def query(self, sql, params=(), one=False):
         s = " ".join(sql.split())
-        if "FROM plans WHERE key = ANY" in s:
-            return [p for p in self.plans if p["key"] in params[0]]
+        if "SELECT key FROM plans" in s:
+            return [dict(p) for p in self.plans]
+        if "DELETE FROM plan_prices WHERE months" in s:
+            gone = [p for p in self.prices if p["months"] not in params[0]]
+            self.prices = [p for p in self.prices if p["months"] in params[0]]
+            return gone
+        if "COUNT(*) AS n FROM companies WHERE plan" in s:
+            return {"n": len([c for c in self.companies if c["plan"] == params[0]])}
         if "UPDATE companies SET plan='base'" in s:
             moved = [c for c in self.companies if c["plan"] in params[0]]
             for c in moved:
@@ -118,20 +125,30 @@ def main():
     check("цены появились", bool(t.PRICES), t.PRICES)
     check("месяц — 79 000", t.price_for("base", 1) == 79000, t.price_for("base", 1))
     check("три месяца — 210 000", t.price_for("base", 3) == 210000, t.price_for("base", 3))
-    check("полгода — 400 000", t.price_for("base", 6) == 400000, t.price_for("base", 6))
     check("год — 700 000", t.price_for("base", 12) == 700000, t.price_for("base", 12))
+    check("полгода не продаём", 6 not in t.TERMS)
+
+    print("\n1a. Цена первых десяти")
+    check("месяц — 55 000", t.price_for("early", 1) == 55000, t.price_for("early", 1))
+    check("три месяца — 150 000", t.price_for("early", 3) == 150000)
+    check("год — 530 000", t.price_for("early", 12) == 530000)
+    check("дешевле списочной на каждом сроке",
+          all(t.price_for("early", m) < t.price_for("base", m) for m in t.TERMS))
+    check("места и лимиты те же, что в списочном",
+          (t.PLANS["early"]["seats"], t.PLANS["early"]["session_limit"])
+          == (t.PLANS["base"]["seats"], t.PLANS["base"]["session_limit"]))
 
     print("\n2. Скидка растёт со сроком")
-    for plan, expect in (("base", 79000),):
+    # У цены первых десяти скидка за срок мягче: их месяц уже дешевле
+    # списочного на треть, и складывать две скидки подряд незачем.
+    for plan, expect, lo, hi in (("base", 79000, 0.24, 0.28), ("early", 55000, 0.17, 0.23)):
         m1 = t.price_for(plan, 1)
         d3 = 1 - t.price_for(plan, 3) / (m1 * 3)
-        d6 = 1 - t.price_for(plan, 6) / (m1 * 6)
         d12 = 1 - t.price_for(plan, 12) / (m1 * 12)
         check(f"{plan}: месяц как в тарифе", m1 == expect, m1)
-        check(f"{plan}: 3 мес около −10%", 0.09 <= d3 <= 0.13, round(d3, 3))
-        check(f"{plan}: 6 мес около −15%", 0.14 <= d6 <= 0.18, round(d6, 3))
-        check(f"{plan}: год около −25%", 0.24 <= d12 <= 0.28, round(d12, 3))
-        check(f"{plan}: чем дольше, тем выгоднее", d3 < d6 < d12)
+        check(f"{plan}: 3 мес около −10%", 0.08 <= d3 <= 0.13, round(d3, 3))
+        check(f"{plan}: год в заданной вилке", lo <= d12 <= hi, round(d12, 3))
+        check(f"{plan}: чем дольше, тем выгоднее", d3 < d12)
 
     print("\n3. Неизвестный срок считается без скидки")
     check("два месяца — по месячной цене", t.price_for("base", 2) == 79000 * 2)
@@ -161,22 +178,33 @@ def main():
     check("цена обновилась", t.price_for("base", 12) == 950000, t.price_for("base", 12))
     check("остальные не задеты", t.price_for("base", 3) == 210000)
 
-    print("\n7. Уход от сетки по местам")
+    print("\n7. Приведение каталога к коду")
     legacy = LegacyDB()
     real_db.query = legacy.query
     real_db.execute = legacy.execute
 
-    check("миграция сработала", t.retire_legacy_plans() is True)
+    check("каталог изменился", t.sync_catalog() is True)
     check("базовый тариф заведён", any(p["key"] == "base" for p in legacy.plans))
+    check("цена первых десяти заведена", any(p["key"] == "early" for p in legacy.plans))
     check("старые тарифы убраны",
           not [p for p in legacy.plans if p["key"] in t.LEGACY_PLANS], legacy.plans)
     check("цены старых тарифов убраны",
           not [p for p in legacy.prices if p["plan_key"] in t.LEGACY_PLANS])
+    check("снятый срок в полгода убран",
+          not [p for p in legacy.prices if p["months"] == 6], legacy.prices)
     check("компании переведены на базовый",
           all(c["plan"] == "base" for c in legacy.companies), legacy.companies)
     check("оплаченные места сохранены",
           [c["seats"] for c in legacy.companies] == [40, 15], legacy.companies)
-    check("повторный запуск ничего не делает", t.retire_legacy_plans() is False)
+    check("повторный запуск ничего не делает", t.sync_catalog() is False)
+
+    print("\n8. Места по цене первых десяти")
+    check("свободны все десять", t.early_left() == t.EARLY_LIMIT, t.early_left())
+    legacy.companies[0]["plan"] = t.EARLY_PLAN
+    check("занятое место вычитается", t.early_left() == t.EARLY_LIMIT - 1, t.early_left())
+    for i in range(20):
+        legacy.companies.append({"id": 100 + i, "plan": t.EARLY_PLAN, "seats": 8})
+    check("ниже нуля не уходим", t.early_left() == 0, t.early_left())
 
     print("\n" + "=" * 58)
     if FAILS:

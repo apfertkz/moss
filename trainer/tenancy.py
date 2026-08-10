@@ -32,15 +32,26 @@ log = logging.getLogger(__name__)
 # тренировок; мест хватает на типовой отдел, а кому мало, тем считаем руками.
 #
 # seats — сколько менеджеров можно завести, session_limit — тренировок в месяц.
+#
+# «Первые десять» — тот же продукт по цене входа. Это не второй тариф в
+# сетке, а зафиксированная за ранними клиентами цена: со списочной легко
+# скинуть, обратно подняться нельзя, поэтому дешёвый вход оформлен как
+# именованное условие с понятным концом, а не как новый прайс.
 PLANS = {
-    "base":  {"title": "Отдел", "price_kzt": 79000, "seats": 8, "session_limit": 200},
-    "trial": {"title": "Пилот", "price_kzt": 0,     "seats": 5, "session_limit": 50},
+    "base":  {"title": "Отдел",         "price_kzt": 79000, "seats": 8, "session_limit": 200},
+    "early": {"title": "Первые десять", "price_kzt": 55000, "seats": 8, "session_limit": 200},
+    "trial": {"title": "Пилот",         "price_kzt": 0,     "seats": 5, "session_limit": 50},
 }
 DEFAULT_PLAN = "trial"
 
 # Тарифы, от которых отказались. Компании на них переводим на базовый,
 # сохраняя уже выданные места и лимиты: клиент купил их за свои деньги.
 LEGACY_PLANS = ("start", "team", "dept")
+
+# Цена первых десяти обещана навсегда — значит, и мест должно быть ровно
+# десять, иначе обещание перестаёт что-либо значить.
+EARLY_PLAN = "early"
+EARLY_LIMIT = 10
 
 # Сколько просить за человека сверх восьмого. В коде не применяется —
 # места добавляются из панели вручную; это ориентир, чтобы на переговорах
@@ -445,44 +456,74 @@ def history(company_id, limit=50):
 DEFAULT_PLANS = dict(PLANS)
 
 
-def retire_legacy_plans():
+def sync_catalog():
     """
-    Перевести базу со сетки по местам на единый тариф.
+    Привести содержимое базы к тому, что объявлено в коде.
 
-    Выполняется один раз и сама себя выключает: если старых тарифов в базе
-    нет, ничего не делает. Отдельной миграции ради этого заводить не стали —
-    шаг ровно один, а лишний механизм пришлось бы поддерживать всегда.
+    Что делает: заводит недостающие тарифы и цены, убирает сетку по местам
+    и сроки, которые мы больше не продаём. Чего не делает — не переписывает
+    существующие цены: их правят из панели, и правка не должна отменяться
+    следующим деплоем.
+
+    Возвращает True, если что-то изменила: вызывающему нужно перечитать.
 
     Места и лимиты компаний не трогаем. Клиент на «Отделе» купил сорок мест
     за свои деньги; перевод на базовый тариф урезал бы его до восьми — это
     было бы не переименование, а отъём оплаченного.
     """
-    stale = db.query("SELECT key FROM plans WHERE key = ANY(%s)", (list(LEGACY_PLANS),))
-    if not stale:
-        return False
+    changed = False
 
-    base = DEFAULT_PLANS["base"]
-    db.execute(
-        """INSERT INTO plans (key, title, price_kzt, seats, session_limit, sort)
-                VALUES (%s,%s,%s,%s,%s,0)
-           ON CONFLICT (key) DO NOTHING""",
-        ("base", base["title"], base["price_kzt"], base["seats"], base["session_limit"]),
-    )
-    for months, price in DEFAULT_PRICES["base"].items():
+    known = {r["key"] for r in (db.query("SELECT key FROM plans") or [])}
+
+    stale = known & set(LEGACY_PLANS)
+    if stale:
+        moved = db.query(
+            "UPDATE companies SET plan='base' WHERE plan = ANY(%s) RETURNING id",
+            (list(LEGACY_PLANS),),
+        ) or []
+        db.execute("DELETE FROM plan_prices WHERE plan_key = ANY(%s)", (list(LEGACY_PLANS),))
+        db.execute("DELETE FROM plans WHERE key = ANY(%s)", (list(LEGACY_PLANS),))
+        log.info("Старые тарифы убраны, компаний переведено: %s", len(moved))
+        changed = True
+
+    for i, (key, p) in enumerate(DEFAULT_PLANS.items()):
+        if key in known:
+            continue
         db.execute(
-            """INSERT INTO plan_prices (plan_key, months, price_kzt) VALUES (%s,%s,%s)
-               ON CONFLICT (plan_key, months) DO NOTHING""",
-            ("base", months, price),
+            """INSERT INTO plans (key, title, price_kzt, seats, session_limit, sort)
+                    VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (key) DO NOTHING""",
+            (key, p["title"], p["price_kzt"], p["seats"], p["session_limit"], i),
         )
+        for months, price in DEFAULT_PRICES.get(key, {}).items():
+            db.execute(
+                """INSERT INTO plan_prices (plan_key, months, price_kzt) VALUES (%s,%s,%s)
+                   ON CONFLICT (plan_key, months) DO NOTHING""",
+                (key, months, price),
+            )
+        log.info("Заведён тариф %s", key)
+        changed = True
 
-    moved = db.query(
-        "UPDATE companies SET plan='base' WHERE plan = ANY(%s) RETURNING id",
-        (list(LEGACY_PLANS),),
+    dropped = db.query(
+        "DELETE FROM plan_prices WHERE months <> ALL(%s) RETURNING plan_key, months",
+        (list(TERMS),),
     ) or []
-    db.execute("DELETE FROM plan_prices WHERE plan_key = ANY(%s)", (list(LEGACY_PLANS),))
-    db.execute("DELETE FROM plans WHERE key = ANY(%s)", (list(LEGACY_PLANS),))
-    log.info("Старые тарифы убраны, компаний переведено: %s", len(moved))
-    return True
+    if dropped:
+        log.info("Убраны сроки, которые больше не продаём: %s", dropped)
+        changed = True
+
+    return changed
+
+
+def early_left():
+    """
+    Сколько ещё компаний можно взять по цене первых десяти.
+
+    Считаем по факту, а не счётчиком в настройках: счётчик разъезжается с
+    реальностью при первой же отмене, а этот ответ всегда верен.
+    """
+    row = db.query("SELECT COUNT(*) AS n FROM companies WHERE plan=%s",
+                   (EARLY_PLAN,), one=True) or {}
+    return max(0, EARLY_LIMIT - int(row.get("n") or 0))
 
 
 def load_plans():
@@ -502,7 +543,7 @@ def load_plans():
             )
         log.info("Тарифы засеяны значениями из кода")
         rows = db.query("SELECT * FROM plans ORDER BY sort, price_kzt") or []
-    elif retire_legacy_plans():
+    elif sync_catalog():
         rows = db.query("SELECT * FROM plans ORDER BY sort, price_kzt") or []
 
     PLANS.clear()
@@ -547,13 +588,15 @@ def save_plan(key, title=None, price_kzt=None, seats=None, session_limit=None):
 #
 # Скидка растёт со сроком: минус десять, пятнадцать и двадцать пять процентов.
 
-TERMS = (1, 3, 6, 12)
+# Три варианта, а не четыре: три выбирают, четыре обдумывают.
+TERMS = (1, 3, 12)
 
 # Скидка за срок — единственное, чем отличаются предложения. Числа круглые
 # намеренно: 213 000 читается как результат работы калькулятора, 210 000 —
 # как решение.
 DEFAULT_PRICES = {
-    "base":  {1: 79000, 3: 210000, 6: 400000, 12: 700000},
+    "base":  {1: 79000, 3: 210000, 12: 700000},
+    "early": {1: 55000, 3: 150000, 12: 530000},
     "trial": {1: 0},
 }
 
