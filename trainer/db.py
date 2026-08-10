@@ -243,6 +243,29 @@ CREATE INDEX IF NOT EXISTS idx_payments_company ON payments(company_id, created_
 -- Доступ руководителей к панели. Отдельно от users намеренно: пароль —
 -- это про вход в веб, а не про сотрудника компании, и живёт по своим
 -- правилам. Удаление сотрудника забирает и доступ.
+-- Демо на сайте: одна попытка одного посетителя.
+--
+-- Своя таблица, а не usage_log: там расход привязан к компании, а у гостя
+-- с сайта компании нет. И дневной потолок расхода нужно считать по базе, а
+-- не по счётчику в памяти — иначе перезапуск процесса обнуляет защиту.
+CREATE TABLE IF NOT EXISTS web_demo (
+    id           BIGSERIAL PRIMARY KEY,
+    token        TEXT        NOT NULL UNIQUE,
+    ip           TEXT,
+    niche        TEXT,
+    answers      JSONB,
+    turns        INTEGER     NOT NULL DEFAULT 0,
+    cost_usd     NUMERIC(12,6) NOT NULL DEFAULT 0,
+    result       TEXT,
+    contact      TEXT,
+    contact_name TEXT,
+    verdict      TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS web_demo_created ON web_demo (created_at);
+CREATE INDEX IF NOT EXISTS web_demo_ip ON web_demo (ip, created_at);
+
 CREATE TABLE IF NOT EXISTS panel_accounts (
     telegram_id   BIGINT      PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
     company_id    BIGINT      NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

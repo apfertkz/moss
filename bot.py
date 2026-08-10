@@ -557,7 +557,7 @@ async def main():
     # Панель управления. Поднимается только если у сервиса есть домен:
     # без PORT Railway её всё равно не откроет наружу.
     try:
-        await webadmin.start(bot)
+        await webadmin.start(bot, client)
     except Exception:
         log.exception("Панель не поднялась — бот продолжает работать")
 

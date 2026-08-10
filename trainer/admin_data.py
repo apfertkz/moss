@@ -370,6 +370,56 @@ def income(days=30):
     return {"amount_kzt": int(row.get("v") or 0), "count": int(row.get("n") or 0)}
 
 
+def web_leads(limit=100):
+    """
+    Заявки с демо на сайте. Даже без контакта строка ценна: видно, какие
+    ниши приходят и на каком шаге люди отваливаются.
+    """
+    rows = db.query(
+        """SELECT id, niche, turns, result, contact, contact_name, verdict,
+                  cost_usd, created_at, finished_at
+             FROM web_demo ORDER BY created_at DESC LIMIT %s""",
+        (limit,),
+    ) or []
+    return [{
+        "id": r["id"],
+        "niche": r.get("niche"),
+        "turns": int(r.get("turns") or 0),
+        "result": r.get("result"),
+        "contact": r.get("contact"),
+        "name": r.get("contact_name"),
+        "verdict": r.get("verdict"),
+        "cost_kzt": _kzt(r.get("cost_usd")),
+        "created_at": r.get("created_at"),
+        "finished": bool(r.get("finished_at")),
+    } for r in rows]
+
+
+def web_demo_stats(days=30):
+    """Сводка по демо на сайте: сколько запусков, доходов до конца, заявок."""
+    row = db.query(
+        """SELECT COUNT(*) AS started,
+                  COUNT(*) FILTER (WHERE finished_at IS NOT NULL) AS finished,
+                  COUNT(*) FILTER (WHERE contact IS NOT NULL AND contact <> '') AS leads,
+                  COALESCE(SUM(cost_usd), 0) AS spend
+             FROM web_demo
+            WHERE created_at > now() - (%s || ' days')::interval""",
+        (str(days),), one=True,
+    ) or {}
+    today = db.query(
+        """SELECT COALESCE(SUM(cost_usd), 0) AS s FROM web_demo
+            WHERE created_at > date_trunc('day', now())""", one=True) or {}
+    started = int(row.get("started") or 0)
+    return {
+        "started": started,
+        "finished": int(row.get("finished") or 0),
+        "leads": int(row.get("leads") or 0),
+        "spend_kzt": _kzt(row.get("spend")),
+        "today_kzt": _kzt(today.get("s")),
+        "to_end": round(int(row.get("finished") or 0) / started * 100) if started else 0,
+    }
+
+
 def money(days=30):
     """
     Расход и маржа по каждому клиенту. Здесь становится видно,

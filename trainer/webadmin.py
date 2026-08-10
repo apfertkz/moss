@@ -28,7 +28,7 @@ import time
 
 from aiohttp import web
 
-from . import db, tenancy, demo, admin_data, niche_loader, accounts
+from . import db, tenancy, demo, admin_data, niche_loader, accounts, webdemo
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +42,12 @@ CODE_TTL = 300          # одноразовый код живёт пять ми
 CODE_ATTEMPTS = 5
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "admin")
+
+# Откуда сайту разрешено обращаться к демо. Список через запятую;
+# без него демо доступно только со страницы на том же домене.
+SITE_ORIGINS = [
+    o.strip() for o in os.environ.get("SITE_ORIGINS", "").split(",") if o.strip()
+]
 
 # Ожидающие подтверждения входы: токен -> код, срок, попытки.
 _pending = {}
@@ -139,6 +145,10 @@ async def auth_middleware(request, handler):
     """
     path = request.path
     open_paths = ("/api/login", "/api/verify", "/api/whoami", "/api/health")
+    # Демо на сайте — публичное по замыслу: его открывает гость, у которого
+    # никакого входа нет. Свои рубежи защиты у него собственные.
+    if path.startswith("/api/try/"):
+        return await handler(request)
     if path.startswith("/api/") and path not in open_paths:
         who = identity(request)
         if not who:
@@ -213,7 +223,7 @@ def _throttled(ip):
     return len(tries) >= 5
 
 
-def build_app(bot):
+def build_app(bot, anthropic_client=None):
     app = web.Application(middlewares=[auth_middleware])
 
     # ---------- вход ----------
@@ -426,6 +436,15 @@ def build_app(bot):
 
     async def demo_queue(request):
         return jsonify(await in_thread(admin_data.demo_queue))
+
+    async def web_leads(request):
+        """Демо на сайте: сводка и заявки. Без него контакты копились бы вслепую."""
+        return jsonify({
+            "stats": await in_thread(admin_data.web_demo_stats,
+                                     int(request.query.get("days", 30))),
+            "leads": await in_thread(admin_data.web_leads),
+            "daily_limit_usd": webdemo.DAILY_USD,
+        })
 
     async def demo_grant(request):
         """Выдать гостю пилот: создаём компанию и шлём ему ссылку в личку."""
@@ -790,6 +809,7 @@ def build_app(bot):
     r.add_post("/api/users/{tg}/{action}", user_action)
 
     r.add_get("/api/demo", demo_queue)
+    r.add_get("/api/leads", web_leads)
     r.add_post("/api/demo/{tg}/grant", demo_grant)
 
     r.add_get("/api/money", money)
@@ -817,6 +837,10 @@ def build_app(bot):
     r.add_get("/api/my/invite", my_invite)
     r.add_post("/api/my/invite", my_invite)
 
+    # Демо для сайта. Без ключа модели его просто нет — панель работает как была.
+    if anthropic_client is not None:
+        webdemo.attach(app, anthropic_client, SITE_ORIGINS)
+
     if os.path.isdir(os.path.join(STATIC_DIR, "assets")):
         r.add_static("/assets/", os.path.join(STATIC_DIR, "assets"))
     r.add_get("/", index)
@@ -830,7 +854,7 @@ def tenancy_admin_ids():
     return notify.ADMIN_IDS
 
 
-async def start(bot):
+async def start(bot, anthropic_client=None):
     """
     Поднять панель. Railway задаёт PORT, когда у сервиса создан домен;
     без него панель просто не запускается и бот работает как раньше.
@@ -842,7 +866,7 @@ async def start(bot):
     if not PASSWORD:
         log.warning("ADMIN_PASSWORD не задан — панель поднимается, но вход невозможен")
 
-    runner = web.AppRunner(build_app(bot))
+    runner = web.AppRunner(build_app(bot, anthropic_client))
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(port)).start()
     log.info("Панель управления слушает порт %s", port)
