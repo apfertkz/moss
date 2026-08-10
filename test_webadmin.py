@@ -136,6 +136,77 @@ async def main():
     check("подделанный отвергается", not webadmin.valid_token(t[:-3] + "aaa"))
     check("мусор отвергается", not webadmin.valid_token("что-то"))
 
+    t = webadmin.make_token(webadmin.owner_subject(5, 777, False))
+    check("токен руководителя разбирается", webadmin.valid_token(t))
+
+    print("\n8. Кабинет руководителя")
+    from trainer import accounts
+
+    stored = accounts.hash_password("pravilny-parol")
+    accounts.check = lambda tg, pw: (
+        {"telegram_id": 777, "company_id": 5, "must_change": True}
+        if tg == 777 and accounts.verify(pw, stored) else None)
+    accounts.set_password = lambda tg, pw: None
+    accounts.panel_url = lambda: "https://panel.example"
+    admin_data.company = lambda cid: {"id": cid, "title": f"К{cid}", "plan": "start",
+                                      "plan_title": "Старт", "status": "active",
+                                      "seats": 5, "seats_taken": 2, "session_limit": 100,
+                                      "sessions_used": 7, "expires_at": None,
+                                      "days_left": None, "invite_code": "AAA"}
+    admin_data.company_summary = lambda cid, days=30: {"company_id": cid, "sessions": 3}
+
+    r = await client.post("/api/login", json={"login": "777", "password": "мимо"})
+    check("чужой пароль руководителя не проходит", r.status == 403, r.status)
+
+    r = await client.post("/api/login", json={"login": "777", "password": "pravilny-parol"})
+    body = await r.json()
+    check("руководитель входит одной ступенью", r.status == 200 and body["role"] == "owner")
+    check("панель просит сменить пароль", body["must_change"] is True)
+
+    r = await client.get("/api/my/summary")
+    check("до смены пароля кабинет закрыт", r.status == 403, r.status)
+    r = await client.get("/api/my/me")
+    check("но своя карточка отдаётся", r.status == 200, r.status)
+
+    bot.sent.clear()
+    r = await client.post("/api/my/password", json={"password": "korotkiy", "repeat": "другой"})
+    check("несовпадающие пароли отвергаются", r.status == 400)
+    r = await client.post("/api/my/password", json={"password": "1234567", "repeat": "1234567"})
+    check("короткий пароль отвергается", r.status == 400)
+
+    r = await client.post("/api/my/password",
+                          json={"password": "novyj-parol-77", "repeat": "novyj-parol-77"})
+    check("новый пароль принят", r.status == 200, r.status)
+    check("подтверждение ушло в Telegram", len(bot.sent) == 1 and bot.sent[0][0] == 777)
+    check("сам пароль в сообщение не попал", "novyj-parol-77" not in bot.sent[0][1])
+
+    r = await client.get("/api/my/summary")
+    check("после смены пароля кабинет открыт", r.status == 200, r.status)
+    check("сводка ограничена своей компанией",
+          (await r.json()).get("company_id") == 5)
+
+    print("\n9. Границы прав руководителя")
+    for path in ("/api/overview", "/api/companies", "/api/money", "/api/settings",
+                 "/api/log", "/api/users", "/api/export/companies"):
+        r = await client.get(path)
+        check(f"{path} закрыт для руководителя", r.status == 403, r.status)
+    r = await client.post("/api/broadcast/send", json={"text": "чужим"})
+    check("общая рассылка закрыта для руководителя", r.status == 403, r.status)
+
+    # Подмена номера компании в запросе не должна ничего менять.
+    r = await client.get("/api/my/summary?company_id=1&days=30")
+    check("company_id из запроса игнорируется", (await r.json()).get("company_id") == 5)
+
+    seen = {}
+    admin_data.segment = lambda name, company_id=None: (
+        seen.update({"cid": company_id}) or [111, 222])
+    r = await client.post("/api/my/broadcast/preview", json={"segment": "all"})
+    check("рассылка руководителя считается по его компании", seen.get("cid") == 5, seen)
+
+    await client.post("/api/logout")
+    r = await client.get("/api/my/me")
+    check("после выхода кабинет закрыт", r.status == 401, r.status)
+
     await client.close()
 
     print("\n" + "=" * 58)

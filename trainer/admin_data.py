@@ -475,6 +475,64 @@ def summary(days=30):
     }
 
 
+def company_summary(company_id, days=30):
+    """
+    То же, что summary, но в границах одной компании.
+
+    Отдельная функция, а не параметр к общей: руководителю нельзя показывать
+    ни новых клиентов продукта, ни чужие тренировки, и лучше, чтобы это
+    решалось запросом, а не фильтром на стороне браузера.
+    """
+    sess = db.query(
+        """SELECT COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE result='won') AS won,
+                  COUNT(DISTINCT telegram_id) AS people
+             FROM sessions
+            WHERE company_id=%s
+              AND finished_at > now() - (%s || ' days')::interval""",
+        (company_id, str(days)), one=True,
+    ) or {}
+    total = int(sess.get("total") or 0)
+    won = int(sess.get("won") or 0)
+
+    daily = db.query(
+        """SELECT date_trunc('day', finished_at) AS day,
+                  COUNT(*) AS n,
+                  COUNT(*) FILTER (WHERE result='won') AS won
+             FROM sessions
+            WHERE company_id=%s
+              AND finished_at > now() - (%s || ' days')::interval
+         GROUP BY 1 ORDER BY 1""",
+        (company_id, str(days)),
+    ) or []
+
+    best = db.query(
+        """SELECT u.full_name, u.username, u.telegram_id,
+                  COUNT(s.id) AS n,
+                  COUNT(*) FILTER (WHERE s.result='won') AS won
+             FROM sessions s JOIN users u ON u.id = s.user_id
+            WHERE s.company_id=%s
+              AND s.finished_at > now() - (%s || ' days')::interval
+         GROUP BY u.id ORDER BY n DESC LIMIT 20""",
+        (company_id, str(days)),
+    ) or []
+
+    return {
+        "days": days,
+        "sessions": total,
+        "people": int(sess.get("people") or 0),
+        "conversion": round(won / total * 100) if total else 0,
+        "daily": [{"day": r["day"], "n": int(r["n"]), "won": int(r["won"])} for r in daily],
+        "team": [{
+            "telegram_id": r["telegram_id"],
+            "full_name": r.get("full_name"),
+            "username": r.get("username"),
+            "sessions": int(r["n"]),
+            "conversion": round(int(r["won"]) / int(r["n"]) * 100) if r["n"] else 0,
+        } for r in best],
+    }
+
+
 def psychotypes(company_id=None, days=90):
     """Разбивка по типам клиентов: где отдел ломается."""
     where = ["finished_at > now() - (%s || ' days')::interval"]
@@ -512,8 +570,24 @@ SEGMENTS = {
 def segment(name, company_id=None):
     """Кому уйдёт рассылка. Возвращает список telegram_id."""
     if company_id:
-        rows = db.query(
-            "SELECT telegram_id FROM users WHERE company_id=%s AND active", (company_id,))
+        # Внутри компании сегменты те же, но список никогда не выходит
+        # за её границы: это единственный способ рассылки для руководителя.
+        if name == "idle":
+            rows = db.query(
+                """SELECT telegram_id FROM users
+                    WHERE company_id=%s AND active
+                      AND (last_seen_at IS NULL
+                           OR last_seen_at < now() - interval '7 days')""",
+                (company_id,))
+        elif name in (tenancy.ROLE_OWNER, tenancy.ROLE_MANAGER, "owners", "managers"):
+            role = tenancy.ROLE_OWNER if name in (tenancy.ROLE_OWNER, "owners") \
+                else tenancy.ROLE_MANAGER
+            rows = db.query(
+                "SELECT telegram_id FROM users WHERE company_id=%s AND active AND role=%s",
+                (company_id, role))
+        else:
+            rows = db.query(
+                "SELECT telegram_id FROM users WHERE company_id=%s AND active", (company_id,))
     elif name == "owners":
         rows = db.query(
             """SELECT u.telegram_id FROM users u JOIN companies c ON c.id=u.company_id

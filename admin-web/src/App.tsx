@@ -14,6 +14,7 @@ import Money from './sections/Money'
 import Reports from './sections/Reports'
 import Broadcast from './sections/Broadcast'
 import Settings from './sections/Settings'
+import OwnerApp from './owner/OwnerApp'
 
 const NAV = [
   { key: 'overview', title: 'Обзор', icon: LayoutDashboard },
@@ -27,20 +28,24 @@ const NAV = [
 ]
 
 export default function App() {
-  const [authorized, setAuthorized] = useState<boolean | null>(null)
+  // null — ещё не спросили, '' — не вошли, иначе роль вошедшего.
+  const [role, setRole] = useState<string | null | ''>(null)
   const [tab, setTab] = useState('overview')
   const [selected, setSelected] = useState<number | null>(null)
   const [reload, setReload] = useState(0)
 
+  const who = () => api.get('/api/whoami')
+    .then((r) => setRole(r.authorized ? r.role : ''))
+    .catch(() => setRole(''))
+
   useEffect(() => {
-    setUnauthorizedHandler(() => setAuthorized(false))
-    api.get('/api/whoami')
-      .then((r) => setAuthorized(!!r.authorized))
-      .catch(() => setAuthorized(false))
+    setUnauthorizedHandler(() => setRole(''))
+    who()
   }, [])
 
-  if (authorized === null) return <div className="min-h-screen bg-ink" />
-  if (!authorized) return <Login onDone={() => setAuthorized(true)} />
+  if (role === null) return <div className="min-h-screen bg-ink" />
+  if (role === '') return <Login onDone={who} />
+  if (role === 'owner') return <OwnerApp onLogout={() => setRole('')} />
 
   /** Открыть клиента из любого раздела — переключаемся и показываем карточку. */
   const openCompany = (id: number) => { setTab('companies'); setSelected(id) }
@@ -93,7 +98,7 @@ export default function App() {
         </div>
 
         <button
-          onClick={async () => { await api.post('/api/logout'); setAuthorized(false) }}
+          onClick={async () => { await api.post('/api/logout'); setRole('') }}
           className="flex items-center gap-3 rounded-lg px-2.5 py-2.5 text-[13px] text-white/35 hover:text-white">
           <LogOut size={17} />
           <span className="hidden lg:block">Выйти</span>

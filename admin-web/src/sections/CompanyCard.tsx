@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { RefreshCw, Copy, Check, FileDown, Send } from 'lucide-react'
 import { api, type Company } from '../api'
 import { money, num, days, date, dateTime, ago, STATUS_TITLES } from '../format'
-import { Btn, Select, Row, Section, Spinner, Empty, Tag, HealthTag, Bar } from '../ui'
+import { Btn, Input, Select, Row, Section, Spinner, Empty, Tag, HealthTag, Bar } from '../ui'
 
 /** Правая колонка: всё о выбранном клиенте и все действия над ним. */
 export default function CompanyCard({
@@ -15,6 +15,7 @@ export default function CompanyCard({
   const [plan, setPlan] = useState('')
   const [copied, setCopied] = useState('')
   const [report, setReport] = useState('')
+  const [access, setAccess] = useState('')
   const [custom, setCustom] = useState(false)
   const [months, setMonths] = useState(3)
   const [amount, setAmount] = useState('')
@@ -206,6 +207,24 @@ export default function CompanyCard({
             </button>
           ))}
           <Btn size="sm" full onClick={() => act('rotate')}>Перевыпустить приглашение</Btn>
+        </div>
+      </Section>
+
+      <Section title="Кабинет руководителя">
+        <div className="rounded-xl border border-line bg-panel p-3.5">
+          <div className="mb-2.5 text-[12px] leading-relaxed text-white/40">
+            Выдать доступ или сбросить забытый пароль. Логин и временный пароль
+            уйдут руководителю в Telegram — сюда пароль не возвращается.
+          </div>
+          <Btn size="sm" full onClick={async () => {
+            try {
+              await api.post(`/api/companies/${id}/panel`, {})
+              setAccess('Отправлено руководителю')
+            } catch (e) { setAccess((e as Error).message) }
+          }}>
+            Выслать доступ
+          </Btn>
+          {access && <div className="mt-2 text-[12px] text-white/50">{access}</div>}
         </div>
       </Section>
 

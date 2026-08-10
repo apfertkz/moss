@@ -32,7 +32,7 @@ from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from trainer import (register_trainer, main_reply_kb, db, tenancy, onboarding,
-                     stats, guide, demo, notify, webadmin)
+                     stats, guide, demo, notify, webadmin, accounts)
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -233,6 +233,30 @@ async def start_deeplink(message: Message, command: CommandObject):
     # И только вторым сообщением — гайд. Если положить его в приветствие,
     # внимание раздваивается и человек не делает ни того, ни другого.
     await guide.deliver(bot, message.from_user.id, guide.text_for(is_owner))
+
+    # Руководителю сразу выдаём доступ в личный кабинет: пока он в боте и
+    # только что подключил компанию, он этот пароль не потеряет.
+    if is_owner:
+        await grant_panel_access(message.from_user.id, user["company_id"])
+
+
+async def grant_panel_access(telegram_id, company_id):
+    """Завести доступ в кабинет и прислать логин с временным паролем."""
+    url = accounts.panel_url()
+    if not url:
+        log.info("PANEL_URL не задан — кабинет руководителю не выдан")
+        return
+    try:
+        loop = asyncio.get_event_loop()
+        if await loop.run_in_executor(None, accounts.get, telegram_id):
+            return                      # доступ уже есть, второй пароль не шлём
+        password = await loop.run_in_executor(
+            None, accounts.create, telegram_id, company_id)
+        await bot.send_message(telegram_id,
+                               accounts.welcome_text(url, telegram_id, password),
+                               parse_mode="Markdown")
+    except Exception:
+        log.exception("Не удалось выдать доступ в кабинет %s", telegram_id)
 
 
 @dp.message(CommandStart())

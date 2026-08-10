@@ -28,7 +28,7 @@ import time
 
 from aiohttp import web
 
-from . import db, tenancy, demo, admin_data, niche_loader
+from . import db, tenancy, demo, admin_data, niche_loader, accounts
 
 log = logging.getLogger(__name__)
 
@@ -63,20 +63,69 @@ def make_token(subject="admin"):
     return f"{payload}:{_sign(payload)}"
 
 
-def valid_token(token):
-    if not token or token.count(":") != 2:
-        return False
-    subject, exp, sig = token.split(":")
-    if not hmac.compare_digest(sig, _sign(f"{subject}:{exp}")):
-        return False
+def owner_subject(company_id, telegram_id, must_change=False):
+    """
+    Кто вошёл, зашито прямо в подписанный токен.
+
+    Признак «пароль ещё не сменён» тоже здесь, а не только в базе: старая
+    кука, выданная до смены пароля, так и останется ограниченной, а после
+    смены выдаётся новая. Иначе выданный при заведении токен пережил бы
+    требование сменить пароль.
+    """
+    return f"owner:{company_id}:{telegram_id}:{'chg' if must_change else 'ok'}"
+
+
+def read_token(token):
+    """Разобрать куку. Возвращает subject либо None."""
+    if not token or token.count(":") < 2:
+        return None
+    payload, sig = token.rsplit(":", 1)
+    subject, _, exp = payload.rpartition(":")
+    if not subject:
+        return None
+    if not hmac.compare_digest(sig, _sign(payload)):
+        return None
     try:
-        return int(exp) > time.time()
+        if int(exp) <= time.time():
+            return None
     except ValueError:
-        return False
+        return None
+    return subject
+
+
+def valid_token(token):
+    return read_token(token) is not None
+
+
+def identity(request):
+    """
+    Кто перед нами: владелец продукта или руководитель компании.
+
+    Возвращает словарь либо None. Область видимости берём отсюда и только
+    отсюда — ни один обработчик не принимает company_id от браузера.
+    """
+    subject = read_token(request.cookies.get(COOKIE))
+    if not subject:
+        return None
+    if subject == "admin":
+        return {"kind": "admin", "company_id": None, "telegram_id": None,
+                "must_change": False}
+    parts = subject.split(":")
+    if len(parts) == 4 and parts[0] == "owner":
+        try:
+            return {"kind": "owner", "company_id": int(parts[1]),
+                    "telegram_id": int(parts[2]), "must_change": parts[3] == "chg"}
+        except ValueError:
+            return None
+    return None
 
 
 def _authorized(request):
-    return valid_token(request.cookies.get(COOKIE))
+    return identity(request) is not None
+
+
+# Пока пароль не сменён, руководителю доступны только эти два адреса.
+LOCKED_PATHS = ("/api/my/me", "/api/my/password", "/api/logout")
 
 
 @web.middleware
@@ -84,11 +133,23 @@ async def auth_middleware(request, handler):
     """
     Всё под /api закрыто, кроме входа. Статика открыта: в ней нет данных,
     а закрывать её означало бы отдавать страницу входа тем же кодом.
+
+    Разделение прав тоже здесь, а не в интерфейсе: спрятанная кнопка не
+    мешает открыть адрес руками, а закрытый маршрут — мешает.
     """
     path = request.path
     open_paths = ("/api/login", "/api/verify", "/api/whoami", "/api/health")
-    if path.startswith("/api/") and path not in open_paths and not _authorized(request):
-        return web.json_response({"error": "Требуется вход"}, status=401)
+    if path.startswith("/api/") and path not in open_paths:
+        who = identity(request)
+        if not who:
+            return web.json_response({"error": "Требуется вход"}, status=401)
+        if who["kind"] != "admin" and not path.startswith("/api/my/") \
+                and path != "/api/logout":
+            return web.json_response({"error": "Недостаточно прав"}, status=403)
+        if who["must_change"] and path not in LOCKED_PATHS:
+            return web.json_response(
+                {"error": "Сначала смените пароль", "must_change": True}, status=403)
+        request["who"] = who
     return await handler(request)
 
 
@@ -131,7 +192,15 @@ async def body(request):
 
 
 def actor(request):
-    return "admin"
+    who = request.get("who")
+    if not who or who["kind"] == "admin":
+        return "admin"
+    return f"owner:{who['telegram_id']}"
+
+
+def scope(request):
+    """company_id, за пределы которого запрос выйти не может."""
+    return (request.get("who") or {}).get("company_id")
 
 
 # --- Вход -------------------------------------------------------------------
@@ -155,6 +224,28 @@ def build_app(bot):
             return jsonify({"error": "Слишком много попыток. Подождите пять минут."}, 429)
 
         data = await body(request)
+        login_id = str(data.get("login") or "").strip()
+
+        # Руководитель входит по своему telegram id: одна ступень, потому что
+        # временный пароль он получил в ту же личку, а второй код в Telegram
+        # ничего к этому не добавил бы.
+        if login_id:
+            if not login_id.isdigit():
+                return jsonify({"error": "Логин — ваш числовой Telegram ID"}, 400)
+            account = await in_thread(accounts.check, int(login_id),
+                                      str(data.get("password") or ""))
+            if not account:
+                _failures.setdefault(ip, []).append(time.time())
+                return jsonify({"error": "Неверный логин или пароль"}, 403)
+
+            resp = jsonify({"role": "owner", "must_change": bool(account["must_change"])})
+            resp.set_cookie(
+                COOKIE,
+                make_token(owner_subject(account["company_id"], int(login_id),
+                                         bool(account["must_change"]))),
+                max_age=SESSION_DAYS * 86400, httponly=True, samesite="Lax")
+            return resp
+
         if not PASSWORD:
             return jsonify({"error": "Пароль панели не задан на сервере"}, 500)
         if data.get("password") != PASSWORD:
@@ -201,7 +292,11 @@ def build_app(bot):
         return resp
 
     async def whoami(request):
-        return jsonify({"authorized": _authorized(request)})
+        who = identity(request)
+        if not who:
+            return jsonify({"authorized": False})
+        return jsonify({"authorized": True, "role": who["kind"],
+                        "must_change": who["must_change"]})
 
     async def logout(request):
         resp = jsonify({"ok": True})
@@ -502,6 +597,163 @@ def build_app(bot):
         ok = await in_thread(db.healthcheck)
         return jsonify({"db": ok})
 
+    # ---------- доступ руководителя (со стороны владельца продукта) ----------
+
+    async def panel_access(request):
+        """
+        Выдать или сбросить доступ руководителю компании и прислать ему
+        временный пароль в личку. Пароль не возвращается в панель: лишняя
+        копия открытого пароля — лишний способ его потерять.
+        """
+        cid = int(request.match_info["id"])
+        owner = await in_thread(tenancy.owner_of, cid)
+        if not owner:
+            return jsonify({"error": "У компании нет руководителя"}, 400)
+
+        url = accounts.panel_url()
+        if not url:
+            return jsonify({"error": "Не задан адрес панели (PANEL_URL)"}, 400)
+
+        tg = owner["telegram_id"]
+        password = await in_thread(accounts.create, tg, cid)
+        try:
+            await bot.send_message(tg, accounts.welcome_text(url, tg, password),
+                                   parse_mode="Markdown")
+        except Exception as e:
+            return jsonify({"error": f"Пароль выдан, но не доставлен: {e}"}, 502)
+
+        await in_thread(tenancy.log_action, actor(request), "panel.access", cid, tg)
+        return jsonify({"sent": True, "telegram_id": tg})
+
+    # ---------- кабинет руководителя ----------
+    #
+    # Всё ниже берёт company_id из подписанной куки. Ни один обработчик не
+    # принимает его из запроса — иначе достаточно было бы подставить чужой
+    # номер в адресной строке.
+
+    async def my_me(request):
+        who = request["who"]
+        card = await in_thread(admin_data.company, who["company_id"])
+        return jsonify({
+            "role": who["kind"],
+            "telegram_id": who["telegram_id"],
+            "must_change": who["must_change"],
+            "company": {
+                "id": card["id"], "title": card["title"], "plan": card["plan"],
+                "plan_title": card.get("plan_title"), "status": card["status"],
+                "seats": card["seats"], "seats_taken": card.get("seats_taken"),
+                "session_limit": card.get("session_limit"),
+                "sessions_used": card.get("sessions_used"),
+                "expires_at": card.get("expires_at"),
+                "days_left": card.get("days_left"),
+                "invite_code": card.get("invite_code"),
+            } if card else None,
+            "segments": {k: v for k, v in admin_data.SEGMENTS.items()
+                         if k in ("all", "managers", "idle")},
+        })
+
+    async def my_password(request):
+        """
+        Смена пароля. Требуем ввести новый дважды — это единственная защита
+        от опечатки, после которой человек останется без доступа.
+        """
+        who = request["who"]
+        d = await body(request)
+        new = str(d.get("password") or "")
+        repeat = str(d.get("repeat") or "")
+        if new != repeat:
+            return jsonify({"error": "Пароли не совпадают"}, 400)
+        issues = accounts.problems(new)
+        if issues:
+            return jsonify({"error": "Пароль должен быть " + ", ".join(issues)}, 400)
+
+        await in_thread(accounts.set_password, who["telegram_id"], new)
+        url = accounts.panel_url()
+        try:
+            await bot.send_message(who["telegram_id"],
+                                   accounts.changed_text(url, who["telegram_id"]),
+                                   parse_mode="Markdown")
+        except Exception:
+            log.exception("Не доставлено подтверждение смены пароля %s", who["telegram_id"])
+
+        # Новая кука без пометки «сменить пароль» — человек остаётся внутри.
+        resp = jsonify({"ok": True})
+        resp.set_cookie(
+            COOKIE, make_token(owner_subject(who["company_id"], who["telegram_id"], False)),
+            max_age=SESSION_DAYS * 86400, httponly=True, samesite="Lax")
+        return resp
+
+    async def my_team(request):
+        return jsonify(await in_thread(admin_data.users, request.query.get("q"),
+                                       scope(request)))
+
+    async def my_summary(request):
+        return jsonify(await in_thread(admin_data.company_summary, scope(request),
+                                       int(request.query.get("days", 30))))
+
+    async def my_psychotypes(request):
+        return jsonify(await in_thread(admin_data.psychotypes, scope(request)))
+
+    async def my_report(request):
+        text = await in_thread(admin_data.client_report, scope(request))
+        return jsonify({"text": text or ""})
+
+    async def my_session(request):
+        """Разбор конкретной тренировки — только своего сотрудника."""
+        tg = int(request.match_info["tg"])
+        u = await in_thread(tenancy.get_user, tg)
+        if not u or u["company_id"] != scope(request):
+            return jsonify({"error": "Сотрудник не найден"}, 404)
+        data = await in_thread(admin_data.last_session, tg)
+        return jsonify(data or {"session": None, "messages": []})
+
+    async def my_broadcast_preview(request):
+        d = await body(request)
+        ids = await in_thread(admin_data.segment, d.get("segment", "all"), scope(request))
+        return jsonify({"count": len(ids)})
+
+    async def my_broadcast_send(request):
+        d = await body(request)
+        text = (d.get("text") or "").strip()
+        if not text:
+            return jsonify({"error": "Пустое сообщение"}, 400)
+
+        who = request["who"]
+        ids = ([who["telegram_id"]] if d.get("test")
+               else await in_thread(admin_data.segment, d.get("segment", "all"),
+                                    who["company_id"]))
+
+        sent = failed = 0
+        for i, uid in enumerate(ids):
+            try:
+                await bot.send_message(uid, text, parse_mode="Markdown")
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(1.2 if (i + 1) % 20 == 0 else 0.05)
+
+        await in_thread(tenancy.log_action, actor(request), "broadcast.own",
+                        who["company_id"], None, {"sent": sent})
+        return jsonify({"sent": sent, "failed": failed, "total": len(ids)})
+
+    async def my_export(request):
+        text = await in_thread(admin_data.export_sessions, scope(request), 90)
+        stamp = datetime.date.today().isoformat()
+        return web.Response(
+            body=text.encode("utf-8"), content_type="text/csv", charset="utf-8",
+            headers={"Content-Disposition": f'attachment; filename="moss-{stamp}.csv"'})
+
+    async def my_invite(request):
+        """Ссылка-приглашение для менеджеров и её отзыв."""
+        who = request["who"]
+        if request.method == "POST":
+            await in_thread(tenancy.rotate_invite_code, who["company_id"])
+            await in_thread(tenancy.log_action, actor(request), "invite.rotate",
+                            who["company_id"])
+        c = await in_thread(tenancy.get_company, who["company_id"])
+        me = await bot.get_me()
+        return jsonify({"link": f"https://t.me/{me.username}?start=join_{c['invite_code']}"})
+
     # ---------- статика ----------
 
     async def index(request):
@@ -526,6 +778,7 @@ def build_app(bot):
     # Обязательно до маршрута с произвольным действием: aiohttp выбирает
     # первый подходящий по порядку регистрации.
     r.add_post("/api/companies/{id}/report", client_report)
+    r.add_post("/api/companies/{id}/panel", panel_access)
     r.add_post("/api/companies/{id}/{action}", company_action)
 
     r.add_get("/api/users", users)
@@ -546,6 +799,19 @@ def build_app(bot):
 
     r.add_post("/api/broadcast/preview", broadcast_preview)
     r.add_post("/api/broadcast/send", broadcast_send)
+
+    r.add_get("/api/my/me", my_me)
+    r.add_post("/api/my/password", my_password)
+    r.add_get("/api/my/team", my_team)
+    r.add_get("/api/my/summary", my_summary)
+    r.add_get("/api/my/psychotypes", my_psychotypes)
+    r.add_get("/api/my/report", my_report)
+    r.add_get("/api/my/team/{tg}/session", my_session)
+    r.add_post("/api/my/broadcast/preview", my_broadcast_preview)
+    r.add_post("/api/my/broadcast/send", my_broadcast_send)
+    r.add_get("/api/my/export", my_export)
+    r.add_get("/api/my/invite", my_invite)
+    r.add_post("/api/my/invite", my_invite)
 
     if os.path.isdir(os.path.join(STATIC_DIR, "assets")):
         r.add_static("/assets/", os.path.join(STATIC_DIR, "assets"))

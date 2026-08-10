@@ -239,7 +239,20 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_payments_company ON payments(company_id, created_at DESC);
+
+-- Доступ руководителей к панели. Отдельно от users намеренно: пароль —
+-- это про вход в веб, а не про сотрудника компании, и живёт по своим
+-- правилам. Удаление сотрудника забирает и доступ.
+CREATE TABLE IF NOT EXISTS panel_accounts (
+    telegram_id   BIGINT      PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
+    company_id    BIGINT      NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    password_hash TEXT        NOT NULL,
+    must_change   BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_login_at TIMESTAMPTZ
+);
 """
+
 
 
 
