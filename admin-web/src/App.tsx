@@ -3,6 +3,7 @@ import {
   LayoutDashboard, Building2, Users as UsersIcon, Sparkles,
   Wallet, BarChart3, Send, Settings as SettingsIcon, LogOut, X,
 } from 'lucide-react'
+import { Mark } from './Logo'
 import { api, setUnauthorizedHandler } from './api'
 import Login from './Login'
 import Overview from './sections/Overview'
@@ -76,9 +77,9 @@ export default function App() {
       <nav className="flex w-[68px] shrink-0 flex-col items-center border-r border-line py-4 lg:w-56 lg:items-stretch lg:px-3">
         <div className="mb-6 flex items-center gap-2.5 px-1 lg:px-2">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-acc/15 text-acc">
-            <Sparkles size={16} />
+            <Mark className="h-[17px] w-auto" />
           </span>
-          <span className="hidden text-[14px] font-medium tracking-tight lg:block">MOSS SALE</span>
+          <span className="hidden text-[14px] font-medium tracking-tight lg:block">aisaty</span>
         </div>
 
         <div className="flex flex-1 flex-col gap-1">

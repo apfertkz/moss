@@ -7,6 +7,7 @@ import { api } from '../api'
 import { num, ago, days as plural, date } from '../format'
 import { Btn, Input, Stat, Section, Empty, Spinner, Row, Bar } from '../ui'
 import ChangePassword from './ChangePassword'
+import { Mark } from '../Logo'
 
 /**
  * Кабинет руководителя.
@@ -58,11 +59,11 @@ export default function OwnerApp({ onLogout }: { onLogout: () => void }) {
       <nav className="hidden w-[68px] shrink-0 flex-col items-center border-r border-line py-4 lg:flex lg:w-56 lg:items-stretch lg:px-3">
         <div className="mb-6 flex items-center gap-2.5 px-1 lg:px-2">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-acc/15 text-acc">
-            <Sparkles size={16} />
+            <Mark className="h-[17px] w-auto" />
           </span>
           <span className="hidden min-w-0 lg:block">
             <span className="block truncate text-[14px] font-medium tracking-tight">
-              {me.company?.title || 'MOSS SALE'}
+              {me.company?.title || 'aisaty'}
             </span>
             <span className="block text-[11px] text-white/35">кабинет руководителя</span>
           </span>
@@ -98,11 +99,11 @@ export default function OwnerApp({ onLogout }: { onLogout: () => void }) {
         <header className="sticky top-0 z-30 flex items-center gap-2.5 border-b border-line
                            bg-ink/90 px-4 py-3 backdrop-blur lg:hidden">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-acc/15 text-acc">
-            <Sparkles size={16} />
+            <Mark className="h-[17px] w-auto" />
           </span>
           <span className="min-w-0">
             <span className="block truncate text-[14px] font-medium tracking-tight">
-              {me.company?.title || 'MOSS SALE'}
+              {me.company?.title || 'aisaty'}
             </span>
             <span className="block text-[11px] text-white/35">кабинет руководителя</span>
           </span>

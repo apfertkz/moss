@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { ShieldCheck } from 'lucide-react'
+
 import { api } from './api'
 import { Btn, Input } from './ui'
+import { Mark } from './Logo'
 
 /**
  * Один вход на двоих.
@@ -48,10 +49,10 @@ export default function Login({ onDone }: { onDone: () => void }) {
       <div className="w-full max-w-sm">
         <div className="mb-8 flex items-center gap-3">
           <span className="grid h-10 w-10 place-items-center rounded-xl bg-acc/15 text-acc">
-            <ShieldCheck size={20} />
+            <Mark className="h-5 w-auto" />
           </span>
           <div>
-            <div className="text-lg font-medium tracking-tight">MOSS SALE</div>
+            <div className="text-lg font-medium tracking-tight">aisaty</div>
             <div className="text-[12px] text-white/40">личный кабинет</div>
           </div>
         </div>
