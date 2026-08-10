@@ -18,11 +18,11 @@ import ChangePassword from './ChangePassword'
  */
 
 const NAV = [
-  { key: 'dash', title: 'Отдел', icon: LayoutDashboard },
-  { key: 'team', title: 'Менеджеры', icon: UsersIcon },
-  { key: 'reports', title: 'Отчёты', icon: BarChart3 },
-  { key: 'broadcast', title: 'Сообщение отделу', icon: Send },
-  { key: 'plan', title: 'Подписка', icon: CreditCard },
+  { key: 'dash', title: 'Отдел', short: 'Отдел', icon: LayoutDashboard },
+  { key: 'team', title: 'Менеджеры', short: 'Люди', icon: UsersIcon },
+  { key: 'reports', title: 'Отчёты', short: 'Отчёты', icon: BarChart3 },
+  { key: 'broadcast', title: 'Сообщение отделу', short: 'Письмо', icon: Send },
+  { key: 'plan', title: 'Подписка', short: 'Тариф', icon: CreditCard },
 ]
 
 type Me = {
@@ -55,7 +55,7 @@ export default function OwnerApp({ onLogout }: { onLogout: () => void }) {
 
   return (
     <div className="flex h-screen overflow-hidden bg-ink">
-      <nav className="flex w-[68px] shrink-0 flex-col items-center border-r border-line py-4 lg:w-56 lg:items-stretch lg:px-3">
+      <nav className="hidden w-[68px] shrink-0 flex-col items-center border-r border-line py-4 lg:flex lg:w-56 lg:items-stretch lg:px-3">
         <div className="mb-6 flex items-center gap-2.5 px-1 lg:px-2">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-acc/15 text-acc">
             <Sparkles size={16} />
@@ -92,7 +92,46 @@ export default function OwnerApp({ onLogout }: { onLogout: () => void }) {
         </button>
       </nav>
 
-      <main className="flex-1 overflow-y-auto">{centre()}</main>
+      <main className="flex-1 overflow-y-auto pb-24 lg:pb-0">
+        {/* Шапка на телефоне: бокового рельса там нет, а понимать,
+            чей это кабинет, всё равно нужно. */}
+        <header className="sticky top-0 z-30 flex items-center gap-2.5 border-b border-line
+                           bg-ink/90 px-4 py-3 backdrop-blur lg:hidden">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-acc/15 text-acc">
+            <Sparkles size={16} />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-[14px] font-medium tracking-tight">
+              {me.company?.title || 'MOSS SALE'}
+            </span>
+            <span className="block text-[11px] text-white/35">кабинет руководителя</span>
+          </span>
+          <button
+            onClick={async () => { await api.post('/api/logout'); onLogout() }}
+            className="ml-auto shrink-0 p-2 text-white/35">
+            <LogOut size={17} />
+          </button>
+        </header>
+        {centre()}
+      </main>
+
+      {/* Нижняя навигация: на 390 пикселях боковой рельс съедал бы шестую
+          часть ширины, а до неё ещё надо дотянуться большим пальцем. */}
+      <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t border-line
+                      bg-ink/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
+        {NAV.map((n) => {
+          const Icon = n.icon
+          const on = tab === n.key
+          return (
+            <button key={n.key} onClick={() => setTab(n.key)}
+              className={`flex flex-1 flex-col items-center gap-1 py-2.5 text-[10px] leading-tight
+                ${on ? 'text-acc' : 'text-white/40'}`}>
+              <Icon size={19} />
+              <span className="max-w-full truncate px-0.5">{n.short}</span>
+            </button>
+          )
+        })}
+      </nav>
     </div>
   )
 }
@@ -110,8 +149,9 @@ function Dash({ me }: { me: Me }) {
   }, [])
 
   return (
-    <div className="p-6">
-      <h2 className="mb-5 text-[22px] font-light tracking-tight">{c?.title}</h2>
+    <div className="p-4 sm:p-6">
+      {/* На телефоне название уже стоит в шапке — второй раз не повторяем. */}
+      <h2 className="mb-5 hidden text-[22px] font-light tracking-tight lg:block">{c?.title}</h2>
 
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Тренировок за месяц" value={num(d?.sessions)} />
@@ -127,18 +167,26 @@ function Dash({ me }: { me: Me }) {
           <div className="space-y-2">
             {d.team.map((t: any) => (
               <div key={t.telegram_id}
-                   className="flex items-center gap-4 rounded-xl border border-line bg-panel px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px]">{t.full_name || t.telegram_id}</div>
-                  <div className="text-[11px] text-white/35">
-                    {t.username ? '@' + t.username : t.telegram_id}
+                   className="rounded-xl border border-line bg-panel px-4 py-3
+                              sm:flex sm:items-center sm:gap-4">
+                <div className="flex items-baseline justify-between gap-3 sm:block sm:min-w-0 sm:flex-1">
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px]">{t.full_name || t.telegram_id}</div>
+                    <div className="truncate text-[11px] text-white/35">
+                      {t.username ? '@' + t.username : t.telegram_id}
+                    </div>
+                  </div>
+                  {/* На телефоне процент стоит рядом с именем, иначе строка
+                      растягивается на три уровня и список перестаёт читаться. */}
+                  <div className="shrink-0 text-right text-[13px] sm:hidden">
+                    {t.conversion}% <span className="text-[11px] text-white/30">из {t.sessions}</span>
                   </div>
                 </div>
-                <div className="w-28">
+                <div className="mt-2.5 sm:mt-0 sm:w-28">
                   <Bar used={t.conversion} total={100}
                        tone={t.conversion >= 50 ? '#5FBF7F' : t.conversion >= 25 ? '#E5B95C' : '#E2574C'} />
                 </div>
-                <div className="w-28 text-right text-[13px]">
+                <div className="hidden w-28 text-right text-[13px] sm:block">
                   {t.conversion}% <span className="text-[11px] text-white/30">из {t.sessions}</span>
                 </div>
               </div>
@@ -189,10 +237,10 @@ function Team() {
   }
 
   if (!rows) return <Spinner />
-  if (!rows.length) return <div className="p-6"><Empty>В отделе пока никого нет</Empty></div>
+  if (!rows.length) return <div className="p-4 sm:p-6"><Empty>В отделе пока никого нет</Empty></div>
 
   return (
-    <div className="p-6">
+    <div className="p-4 sm:p-6">
       <div className="space-y-2">
         {rows.map((u) => (
           <div key={u.telegram_id} className="rounded-xl border border-line bg-panel">
@@ -262,7 +310,7 @@ function OwnerReports() {
   const max = Math.max(1, ...d.daily.map((x: any) => x.n))
 
   return (
-    <div className="p-6">
+    <div className="p-4 sm:p-6">
       <div className="mb-4 flex flex-wrap items-center gap-1.5">
         {[7, 30, 90].map((n) => (
           <button key={n} onClick={() => setDays(n)}
@@ -304,16 +352,22 @@ function OwnerReports() {
         {!types?.length ? <Empty>Данных пока нет</Empty> : (
           <div className="space-y-2">
             {types.map((t, i) => (
-              <div key={i} className="flex items-center gap-4 rounded-xl border border-line bg-panel px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px]">{t.status || '—'}</div>
-                  <div className="text-[11px] text-white/35">{t.psychotype}</div>
+              <div key={i} className="rounded-xl border border-line bg-panel px-4 py-3
+                                       sm:flex sm:items-center sm:gap-4">
+                <div className="flex items-baseline justify-between gap-3 sm:block sm:min-w-0 sm:flex-1">
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px]">{t.status || '—'}</div>
+                    <div className="truncate text-[11px] text-white/35">{t.psychotype}</div>
+                  </div>
+                  <div className="shrink-0 text-right text-[13px] sm:hidden">
+                    {t.conversion}% <span className="text-[11px] text-white/30">из {t.n}</span>
+                  </div>
                 </div>
-                <div className="w-32">
+                <div className="mt-2.5 sm:mt-0 sm:w-32">
                   <Bar used={t.conversion} total={100}
                        tone={t.conversion >= 50 ? '#5FBF7F' : t.conversion >= 25 ? '#E5B95C' : '#E2574C'} />
                 </div>
-                <div className="w-24 text-right text-[13px]">
+                <div className="hidden w-24 text-right text-[13px] sm:block">
                   {t.conversion}% <span className="text-[11px] text-white/30">из {t.n}</span>
                 </div>
               </div>
@@ -347,7 +401,7 @@ function OwnerBroadcast({ segments }: { segments: Record<string, string> }) {
   }, [segment])
 
   return (
-    <div className="max-w-2xl p-6">
+    <div className="max-w-2xl p-4 sm:p-6">
       <Section title="Кому">
         <div className="flex flex-wrap gap-1.5">
           {Object.entries(segments).map(([k, v]) => (
@@ -406,7 +460,7 @@ function Plan({ me }: { me: Me }) {
   if (!c) return <Spinner />
 
   return (
-    <div className="max-w-2xl p-6">
+    <div className="max-w-2xl p-4 sm:p-6">
       <Section title="Подписка">
         <div className="rounded-xl border border-line bg-panel px-4 py-1">
           <Row label="Тариф">{c.plan_title}</Row>

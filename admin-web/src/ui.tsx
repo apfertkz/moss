@@ -89,9 +89,11 @@ export function Stat({
 }) {
   const color = tone === 'ok' ? 'text-ok' : tone === 'bad' ? 'text-bad' : 'text-white'
   return (
-    <div className="rounded-xl border border-line bg-panel p-4">
-      <div className="text-[11px] uppercase tracking-[0.12em] text-white/35">{label}</div>
-      <div className={`mt-1.5 text-2xl font-light tracking-tight ${color}`}>{value}</div>
+    <div className="rounded-xl border border-line bg-panel p-3 sm:p-4">
+      <div className="text-[10px] uppercase leading-tight tracking-[0.1em] text-white/35 sm:text-[11px] sm:tracking-[0.12em]">
+        {label}
+      </div>
+      <div className={`mt-1.5 text-xl font-light tracking-tight sm:text-2xl ${color}`}>{value}</div>
       {hint && <div className="mt-1 text-[12px] text-white/40">{hint}</div>}
     </div>
   )
