@@ -27,7 +27,7 @@ import tempfile
 
 import anthropic
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, BufferedInputFile
+from aiogram.types import Message, CallbackQuery, BufferedInputFile, BotCommand
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -273,6 +273,22 @@ async def start(message: Message):
         f"🎯 «Тренажёр» — потренироваться на живом клиенте.\n"
         f"📸 Или скидывай скрины переписки — разберу по Гребенюку.{hint}",
         reply_markup=main_reply_kb(is_owner))
+
+
+@dp.message(Command("menu"))
+async def menu_cmd(message: Message):
+    """
+    Вернуть кнопки. Запасной выход: клавиатура принадлежит чату, и если
+    она пропала, единственный способ её вернуть — прислать сообщение с
+    ней. Без такой команды человек остаётся один на один с пустым полем
+    ввода и подсказками про кнопки, которых не видит.
+    """
+    u = await guard(message)
+    if not u:
+        return
+    await message.answer(
+        "Кнопки на месте.",
+        reply_markup=main_reply_kb(u["role"] == tenancy.ROLE_OWNER))
 
 
 @dp.message(Command("help"))
@@ -525,11 +541,22 @@ async def handle_text(message: Message):
     u = await guard(message)
     if not u:
         return
+
+    # Клавиатуру прикладываем к каждому такому ответу.
+    #
+    # Она живёт в чате, а не в сообщении, и один раз пропав — не вернётся
+    # сама. Пропасть может от чего угодно: человек написал боту раньше,
+    # чем тот поднялся, свернул клавиатуру пальцем, зашёл с другого
+    # устройства. А текст ниже прямо велит нажать кнопку, которой в этот
+    # момент нет — тупик, из которого не выбраться без подсказки.
+    kb = main_reply_kb(u["role"] == tenancy.ROLE_OWNER)
+
     if not get_history(message.from_user.id):
         await message.answer("Скидывай скриншот переписки — разберём. "
-                             "Или жми «🎯 Тренажёр», чтобы потренироваться.")
+                             "Или жми «🎯 Тренажёр», чтобы потренироваться.",
+                             reply_markup=kb)
         return
-    await message.answer("Думаю…")
+    await message.answer("Думаю…", reply_markup=kb)
     try:
         answer = await ask_claude(u, message.text)
         await send_answer(message.from_user.id, answer)
@@ -548,6 +575,19 @@ async def main():
     await asyncio.get_event_loop().run_in_executor(None, tenancy.load_prices)
     me = await bot.get_me()
     log.info("Бот @%s запущен", me.username)
+
+    # Список команд в меню Telegram. Прописываем из кода, а не руками в
+    # BotFather: иначе новый бот заводится с пустым меню, и об этом
+    # вспоминают через месяц.
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Начать"),
+            BotCommand(command="menu", description="Показать кнопки"),
+            BotCommand(command="stats", description="Моя конверсия"),
+            BotCommand(command="help", description="Что умеет бот"),
+        ])
+    except Exception:
+        log.exception("Не удалось прописать команды — не критично")
     await asyncio.get_event_loop().run_in_executor(None, check_models)
 
     # Фоновая проверка подписок и уборка брошенных тренировок.
