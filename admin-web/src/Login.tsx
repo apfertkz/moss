@@ -16,6 +16,10 @@ import { Mark } from './Logo'
  */
 export default function Login({ onDone }: { onDone: () => void }) {
   const [stage, setStage] = useState<'password' | 'code'>('password')
+  // Кто входит. Раньше поле логина стояло всегда, и владелец продукта
+  // естественно вписывал туда свой telegram id — а его учётной записи
+  // руководителя не существует, и вход отвергался без объяснений.
+  const [owner, setOwner] = useState(false)
   const [login, setLogin] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
@@ -25,7 +29,7 @@ export default function Login({ onDone }: { onDone: () => void }) {
   const submitPassword = async () => {
     setError('')
     try {
-      const r = await api.post('/api/login', { login: login.trim(), password })
+      const r = await api.post('/api/login', { login: owner ? '' : login.trim(), password })
       if (r.role === 'owner') { onDone(); return }
       setToken(r.token)
       setStage('code')
@@ -59,16 +63,19 @@ export default function Login({ onDone }: { onDone: () => void }) {
 
         {stage === 'password' ? (
           <div className="space-y-3">
-            <Input
-              autoFocus
-              inputMode="numeric"
-              placeholder="Telegram ID"
-              value={login}
-              onChange={(e) => setLogin(e.target.value.replace(/\D/g, ''))}
-              onKeyDown={(e) => e.key === 'Enter' && submitPassword()}
-            />
+            {!owner && (
+              <Input
+                autoFocus
+                inputMode="numeric"
+                placeholder="Telegram ID"
+                value={login}
+                onChange={(e) => setLogin(e.target.value.replace(/\D/g, ''))}
+                onKeyDown={(e) => e.key === 'Enter' && submitPassword()}
+              />
+            )}
             <Input
               type="password"
+              autoFocus={owner}
               placeholder="Пароль"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -76,8 +83,16 @@ export default function Login({ onDone }: { onDone: () => void }) {
             />
             <Btn tone="accent" full onClick={submitPassword}>Войти</Btn>
             <p className="pt-1 text-[12px] leading-relaxed text-white/30">
-              Логин и первый пароль пришли вам в Telegram при подключении компании.
+              {owner
+                ? 'После пароля придёт код в Telegram.'
+                : 'Логин и первый пароль пришли вам в Telegram при подключении компании.'}
             </p>
+            <button
+              onClick={() => { setOwner(!owner); setError('') }}
+              className="w-full py-1 text-[12px] text-white/35 hover:text-white/70"
+            >
+              {owner ? 'Я руководитель компании' : 'Я владелец продукта'}
+            </button>
           </div>
         ) : (
           <div className="space-y-3">
