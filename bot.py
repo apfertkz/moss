@@ -291,6 +291,26 @@ async def menu_cmd(message: Message):
         reply_markup=main_reply_kb(u["role"] == tenancy.ROLE_OWNER))
 
 
+ROOM_URL = os.environ.get("ROOM_URL", "")
+
+
+@dp.message(Command("id"))
+async def id_cmd(message: Message):
+    """
+    Свой Telegram ID — он же логин в тренировочной комнате на сайте.
+
+    Команда нужна ровно для одного: человек открывает комнату, видит поле
+    «Telegram ID» и не знает, что туда писать. Отправлять его к сторонним
+    ботам, которые показывают чужие ID, — плохая идея по очевидной причине.
+    """
+    tail = f"\n\nКомната: {ROOM_URL}" if ROOM_URL else ""
+    await message.answer(
+        f"Ваш Telegram ID: `{message.from_user.id}`\n\n"
+        f"Он же логин для входа в тренировочную комнату на сайте. "
+        f"Пароль не нужен — код придёт сюда же.{tail}",
+        parse_mode="Markdown")
+
+
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
     u = await guard(message)
@@ -299,7 +319,8 @@ async def help_cmd(message: Message):
     lines = ["*Что умеет бот*", "",
              "🎯 Тренажёр — диалог с живым клиентом и разбор после",
              "📸 Скрин переписки — разбор реальной ситуации",
-             "📊 /stats — ваша конверсия"]
+             "📊 /stats — ваша конверсия",
+             "🖥 /id — вход в тренировочную комнату на сайте"]
     if u["role"] == tenancy.ROLE_OWNER:
         lines += ["", "*Для руководителя:*",
                   "/dashboard — сводка по отделу",
@@ -584,6 +605,7 @@ async def main():
             BotCommand(command="start", description="Начать"),
             BotCommand(command="menu", description="Показать кнопки"),
             BotCommand(command="stats", description="Моя конверсия"),
+            BotCommand(command="id", description="Мой ID для входа в комнату"),
             BotCommand(command="help", description="Что умеет бот"),
         ])
     except Exception:
