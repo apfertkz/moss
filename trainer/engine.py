@@ -317,10 +317,16 @@ def opening_message(client, scenario, profile):
         return [scenario["request"]], costs.usage_dict(None)
 
 
-def step(client, session, manager_message):
+def step(client, session, manager_message, image=None):
     """
     Один ход тренажёра. session — словарь сессии из handlers.
     Возвращает dict: buyer_messages, deal_state, silence_hours, stage, coach_note, usage.
+
+    image — необязательная картинка от менеджера: {"media_type", "data"}, где
+    data это base64. Нужна для комнаты на сайте, где менеджер прикладывает
+    фото работ прямо в переписку. Клиент должен видеть то же, что видел бы
+    живой покупатель: «прислал фото» без самой картинки — это разговор
+    вслепую, и разбор по нему получился бы выдуманным.
     """
     scenario = session["scenario"]
     profile = session["profile"]
@@ -352,14 +358,34 @@ def step(client, session, manager_message):
     else:
         parts.append("Сейчас НЕ пропадай: отвечай, даже если коротко и холодно.")
 
+    if image:
+        parts.append(
+            "ВНИМАНИЕ: менеджер прислал фотографию — она приложена к этому "
+            "сообщению. Смотри на неё как покупатель: реагируй на то, что "
+            "видно, а не на сам факт вложения."
+        )
     parts.append(f"НОВОЕ СООБЩЕНИЕ МЕНЕДЖЕРА:\n{manager_message}")
     parts.append("Ответь строго JSON по формату.")
+
+    text_block = "\n\n".join(parts)
+    if image:
+        # Картинка идёт первой: модель разбирает вложение до того, как
+        # прочтёт указание отвечать JSON, и не пытается описать его словами.
+        content = [
+            {"type": "image",
+             "source": {"type": "base64",
+                        "media_type": image["media_type"],
+                        "data": image["data"]}},
+            {"type": "text", "text": text_block},
+        ]
+    else:
+        content = text_block
 
     resp = llm.create(client,
         model=DIALOG_MODEL,
         max_tokens=800,
         system=_system_blocks(scenario, profile),
-        messages=[{"role": "user", "content": "\n\n".join(parts)}],
+        messages=[{"role": "user", "content": content}],
     )
     usage = costs.usage_dict(resp)
     raw = costs.text_of(resp)

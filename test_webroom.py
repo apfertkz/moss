@@ -238,6 +238,44 @@ async def main():
     check("тренировка началась даже так", bool(r["client"]["name"]), r)
     check("клиент всё равно написал первым", len(r["transcript"]) >= 1, r["transcript"])
 
+    print("\n9. Фото от менеджера")
+    llm.create = fake_create
+    engine.llm.create = fake_create
+    seen_content = {}
+
+    def capture(client, **kw):
+        seen_content["content"] = kw["messages"][0]["content"]
+        return fake_create(client, **kw)
+    llm.create = capture
+    engine.llm.create = capture
+
+    await webroom.start(None, dict(USER))
+    out = await webroom.say(None, dict(USER), "Вот наши работы",
+                            "data:image/jpeg;base64,QUJD")
+    blocks = seen_content["content"]
+    check("картинка ушла в модель отдельным блоком",
+          isinstance(blocks, list) and blocks[0]["type"] == "image", type(blocks))
+    check("тип файла передан как есть",
+          blocks[0]["source"]["media_type"] == "image/jpeg", blocks[0]["source"])
+    check("фото помечено в переписке",
+          out["transcript"][-2]["text"].startswith("📎"), out["transcript"][-2])
+    check("сама картинка в память не легла",
+          "QUJD" not in json.dumps(store_.data, ensure_ascii=False))
+
+    out = await webroom.say(None, dict(USER), "", "data:image/png;base64,QUJD")
+    check("фото без подписи проходит", out["turns"] >= 2, out["turns"])
+
+    try:
+        await webroom.say(None, dict(USER), "смотрите", "data:application/pdf;base64,QUJD")
+        check("чужой тип файла отклонён", False)
+    except ValueError as e:
+        check("чужой тип файла отклонён", True)
+        check("сказано, что подойдёт", "JPG" in str(e), str(e))
+
+    await webroom.say(None, dict(USER), "Просто текст")
+    check("без картинки запрос остаётся обычным текстом",
+          isinstance(seen_content["content"], str), type(seen_content["content"]))
+
     print("\n" + "=" * 58)
     if FAILS:
         print(f"ПРОВАЛЕНО {len(FAILS)}: " + "; ".join(FAILS))

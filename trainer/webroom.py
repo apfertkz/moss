@@ -36,11 +36,12 @@ import json
 import logging
 import os
 import random
+import re
 import time
 
 from aiohttp import web
 
-from . import (db, engine, niche_loader, stats, store, tenancy, webadmin)
+from . import (db, engine, guide, niche_loader, stats, store, tenancy, webadmin)
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,11 @@ CODE_ATTEMPTS = 3
 # проваливается раньше; потолок нужен на случай переписки без конца — она
 # стоит денег и уже ничему не учит.
 MAX_TURNS = int(os.environ.get("ROOM_MAX_TURNS", "40"))
+
+# Фото от менеджера. Полтора мегабайта после кодирования — это примерно
+# снимок с телефона без обработки; больше незачем, модель всё равно ужмёт.
+MAX_IMAGE_BYTES = 1_500_000
+ALLOWED_IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 
 # Ожидающие подтверждения входы: токен -> код, срок, остаток попыток.
 # В памяти процесса намеренно: перезапуск панели должен обнулять недоверенные
@@ -209,23 +215,53 @@ async def start(client, user):
     return _view(session, {"intro": engine.scenario_intro(scenario)})
 
 
-async def say(client, user, text):
+def parse_image(raw):
+    """
+    Разобрать картинку из браузера. Приходит строкой вида
+    «data:image/jpeg;base64,…». Возвращает словарь для движка или None.
+
+    Проверяем тип и размер здесь, а не только в браузере: до сервера может
+    прийти что угодно, минуя нашу страницу.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    m = re.match(r"^data:([\w/+.-]+);base64,(.+)$", raw, re.S)
+    if not m:
+        raise ValueError("Не разобрали файл — приложите обычное фото")
+    media_type, data = m.group(1).lower(), m.group(2)
+    if media_type not in ALLOWED_IMAGE_TYPES:
+        raise ValueError("Такие файлы клиент не откроет. Подойдут JPG, PNG, WEBP или GIF")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ValueError("Фото тяжёлое — ужмите его или пришлите другое")
+    return {"media_type": media_type, "data": data}
+
+
+async def say(client, user, text, image=None):
     """Ход менеджера. Возвращает ответ клиента и состояние сделки."""
     session = await asyncio.get_event_loop().run_in_executor(
         None, store.get, user["telegram_id"])
     if not session:
         raise ValueError("Тренировка не найдена — начните новую")
 
+    picture = parse_image(image)
     text = (text or "").strip()[:2000]
-    if not text:
+    if not text and not picture:
         raise ValueError("Пустое сообщение")
+    if picture and not text:
+        # Голое фото без слов движок принимает плохо: ему нужен ход
+        # менеджера. Подставляем то, что и так подразумевается.
+        text = "(прислал фото)"
     if session["turns"] >= MAX_TURNS:
         raise ValueError("Переписка затянулась — завершите её и посмотрите разбор")
 
     loop = asyncio.get_event_loop()
-    session["transcript"].append(["manager", text])
+    # В переписку пишем пометку, а не саму картинку: активная тренировка
+    # лежит в базе, и складывать туда мегабайты изображений — верный способ
+    # раздуть её до неподъёмного состояния. Показывает фото браузер, у себя.
+    session["transcript"].append(["manager", f"📎 {text}" if picture else text])
 
-    out = await loop.run_in_executor(None, engine.step, client, session, text)
+    out = await loop.run_in_executor(
+        None, lambda: engine.step(client, session, text, picture))
     _add_usage(session, out["usage"])
     await loop.run_in_executor(
         None, stats.record_usage, user["company_id"], user["telegram_id"],
@@ -420,6 +456,32 @@ def attach(app, bot, anthropic_client, origins):
         resp = ok(request, {"ok": True})
         return set_cookie(resp, "", 0)
 
+    # ——— гайд ———
+
+    async def h_guide(request):
+        """
+        Гайд по алгоритму продаж — той же страницей, что уходит файлом в боте.
+
+        Отдаём его текстом, а не ссылкой на файл: страница показывается внутри
+        комнаты рядом с перепиской, и открывать её отдельной вкладкой значило
+        бы увести человека из тренировки.
+
+        Файл один и тот же для всех, поэтому читаем его с диска каждый раз, но
+        просим браузер подержать копию у себя: он не меняется между сборками.
+        """
+        who(request)
+        if not guide.guide_exists():
+            return ok(request, {"error": "Гайд не найден на сервере"}, 404)
+        try:
+            with open(guide.GUIDE_FILE, encoding="utf-8") as f:
+                html = f.read()
+        except Exception:
+            log.exception("Гайд не прочитался")
+            return ok(request, {"error": "Гайд не открылся"}, 500)
+        resp = web.Response(text=html, content_type="text/html", charset="utf-8")
+        resp.headers["Cache-Control"] = "private, max-age=3600"
+        return cors(resp, request)
+
     # ——— комната ———
 
     async def h_me(request):
@@ -456,7 +518,8 @@ def attach(app, bot, anthropic_client, origins):
         user = who(request)
         d = await body(request)
         try:
-            return ok(request, await say(anthropic_client, user, d.get("text")))
+            return ok(request, await say(anthropic_client, user,
+                                        d.get("text"), d.get("image")))
         except ValueError as e:
             return ok(request, {"error": str(e)}, 400)
         except Exception:
@@ -479,9 +542,11 @@ def attach(app, bot, anthropic_client, origins):
     r.add_post("/api/room/verify", h_verify)
     r.add_post("/api/room/logout", h_logout)
     r.add_get("/api/room/me", h_me)
+    r.add_get("/api/room/guide", h_guide)
     r.add_post("/api/room/start", h_start)
     r.add_post("/api/room/say", h_say)
     r.add_post("/api/room/finish", h_finish)
     for path in ("/api/room/login", "/api/room/verify", "/api/room/logout",
-                 "/api/room/me", "/api/room/start", "/api/room/say", "/api/room/finish"):
+                 "/api/room/me", "/api/room/guide", "/api/room/start",
+                 "/api/room/say", "/api/room/finish"):
         r.add_route("OPTIONS", path, preflight)
