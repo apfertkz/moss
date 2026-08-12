@@ -317,16 +317,17 @@ def opening_message(client, scenario, profile):
         return [scenario["request"]], costs.usage_dict(None)
 
 
-def step(client, session, manager_message, image=None):
+def step(client, session, manager_message, images=None):
     """
     Один ход тренажёра. session — словарь сессии из handlers.
     Возвращает dict: buyer_messages, deal_state, silence_hours, stage, coach_note, usage.
 
-    image — необязательная картинка от менеджера: {"media_type", "data"}, где
-    data это base64. Нужна для комнаты на сайте, где менеджер прикладывает
-    фото работ прямо в переписку. Клиент должен видеть то же, что видел бы
-    живой покупатель: «прислал фото» без самой картинки — это разговор
-    вслепую, и разбор по нему получился бы выдуманным.
+    images — необязательный список картинок от менеджера, по одной штуке
+    {"media_type", "data"}, где data это base64. Нужен для комнаты на сайте,
+    где менеджер прикладывает фото работ прямо в переписку. Клиент должен
+    видеть то же, что видел бы живой покупатель: «прислал фото» без самой
+    картинки — это разговор вслепую, и разбор по нему вышел бы выдуманным.
+    Одиночная картинка тоже принимается — вызовы из бота не переписываем.
     """
     scenario = session["scenario"]
     profile = session["profile"]
@@ -358,26 +359,28 @@ def step(client, session, manager_message, image=None):
     else:
         parts.append("Сейчас НЕ пропадай: отвечай, даже если коротко и холодно.")
 
-    if image:
+    pics = [images] if isinstance(images, dict) else list(images or [])
+    if pics:
         parts.append(
-            "ВНИМАНИЕ: менеджер прислал фотографию — она приложена к этому "
-            "сообщению. Смотри на неё как покупатель: реагируй на то, что "
-            "видно, а не на сам факт вложения."
+            f"ВНИМАНИЕ: менеджер прислал {'фотографию' if len(pics) == 1 else f'{len(pics)} фотографии'} "
+            "— они приложены к этому сообщению. Смотри на них как покупатель: "
+            "реагируй на то, что видно, а не на сам факт вложения."
         )
     parts.append(f"НОВОЕ СООБЩЕНИЕ МЕНЕДЖЕРА:\n{manager_message}")
     parts.append("Ответь строго JSON по формату.")
 
     text_block = "\n\n".join(parts)
-    if image:
-        # Картинка идёт первой: модель разбирает вложение до того, как
-        # прочтёт указание отвечать JSON, и не пытается описать его словами.
+    if pics:
+        # Картинки идут первыми: модель разбирает вложения до того, как
+        # прочтёт указание отвечать JSON, и не пытается описать их словами.
         content = [
             {"type": "image",
              "source": {"type": "base64",
-                        "media_type": image["media_type"],
-                        "data": image["data"]}},
-            {"type": "text", "text": text_block},
+                        "media_type": p["media_type"],
+                        "data": p["data"]}}
+            for p in pics
         ]
+        content.append({"type": "text", "text": text_block})
     else:
         content = text_block
 

@@ -25,15 +25,20 @@ _PSY_NAMES = {
 
 # --- Запись -----------------------------------------------------------------
 
-def record_session(user, scenario, result, turns, transcript=None):
-    """Сохранить завершённую тренировку. user — строка из tenancy.get_user()."""
+def record_session(user, scenario, result, turns, transcript=None, via="bot"):
+    """
+    Сохранить завершённую тренировку. user — строка из tenancy.get_user().
+
+    via — где тренировались: «bot» или «web». По умолчанию бот, чтобы старые
+    вызовы работали как прежде.
+    """
     row = db.execute(
         """INSERT INTO sessions
-           (company_id, user_id, telegram_id, psychotype_id, status_title, request, result, turns)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+           (company_id, user_id, telegram_id, psychotype_id, status_title, request, result, turns, via)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
         (user["company_id"], user["id"], user["telegram_id"],
          scenario.get("psychotype_id"), scenario.get("status_title"),
-         scenario.get("request"), result, turns),
+         scenario.get("request"), result, turns, via),
         returning=True,
     )
     session_id = row["id"]

@@ -139,6 +139,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     request       TEXT,
     result        TEXT        NOT NULL,
     turns         INTEGER     NOT NULL DEFAULT 0,
+    -- Где тренировались: в боте или в комнате на сайте. Нужно, чтобы знать,
+    -- чем люди на самом деле пользуются, а не догадываться.
+    via           TEXT        NOT NULL DEFAULT 'bot',
     started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -281,10 +284,25 @@ CREATE TABLE IF NOT EXISTS panel_accounts (
 
 
 
+# Досыпки к существующим базам. CREATE TABLE IF NOT EXISTS не добавляет
+# колонки в уже созданную таблицу, поэтому новые поля перечисляем здесь.
+# Каждая строка обязана быть безопасной при повторном запуске.
+MIGRATIONS = (
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS via TEXT NOT NULL DEFAULT 'bot'",
+)
+
+
 def init_db():
     """Создать схему. Безопасно вызывать при каждом старте бота."""
     with connection() as conn:
         conn.execute(SCHEMA)
+        for sql in MIGRATIONS:
+            try:
+                conn.execute(sql)
+            except Exception:
+                # Одна неудачная досыпка не должна мешать боту подняться:
+                # без неё он работает как раньше, а в журнале видно, что чинить.
+                log.exception("Не применилась досыпка: %s", sql)
     log.info("Схема базы данных готова")
 
 

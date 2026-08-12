@@ -149,10 +149,6 @@ async def auth_middleware(request, handler):
     # никакого входа нет. Свои рубежи защиты у него собственные.
     if path.startswith("/api/try/"):
         return await handler(request)
-    # Комната менеджера. У него нет доступа ни в панель, ни в кабинет, и общая
-    # проверка отдала бы ему 401. Своя кука и своя проверка — в webroom.
-    if path.startswith("/api/room/"):
-        return await handler(request)
     if path.startswith("/api/") and path not in open_paths:
         who = identity(request)
         if not who:
@@ -228,7 +224,11 @@ def _throttled(ip):
 
 
 def build_app(bot, anthropic_client=None):
-    app = web.Application(middlewares=[auth_middleware])
+    # Фото из тренировочной комнаты приходят прямо в теле запроса, а aiohttp
+    # по умолчанию рубит всё тяжелее мегабайта — и рубит молча, до наших
+    # обработчиков. Снимок с телефона в это не влезает, и человек видит
+    # «не дозвонились до сервера» вместо ответа клиента.
+    app = web.Application(middlewares=[auth_middleware], client_max_size=12 * 1024 * 1024)
 
     # ---------- вход ----------
 
@@ -844,10 +844,6 @@ def build_app(bot, anthropic_client=None):
     # Демо для сайта. Без ключа модели его просто нет — панель работает как была.
     if anthropic_client is not None:
         webdemo.attach(app, anthropic_client, SITE_ORIGINS)
-        # Комната менеджера. Ввозим здесь, а не сверху файла: комната опирается
-        # на подпись из этого модуля, и встречный импорт наверху замкнул бы круг.
-        from . import webroom
-        webroom.attach(app, bot, anthropic_client, SITE_ORIGINS)
 
     if os.path.isdir(os.path.join(STATIC_DIR, "assets")):
         r.add_static("/assets/", os.path.join(STATIC_DIR, "assets"))

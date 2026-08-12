@@ -66,7 +66,14 @@ MAX_TURNS = int(os.environ.get("ROOM_MAX_TURNS", "40"))
 
 # Фото от менеджера. Полтора мегабайта после кодирования — это примерно
 # снимок с телефона без обработки; больше незачем, модель всё равно ужмёт.
+# Потолок расхода на комнату, в долларах на компанию в сутки. Лимит тарифа
+# считает тренировки, но одна тренировка на сорок ходов стоит как пять
+# коротких: без денежного потолка отдел на большом тарифе способен за день
+# съесть месячную маржу. Ноль — потолка нет.
+ROOM_DAILY_USD = float(os.environ.get("ROOM_DAILY_USD", "8"))
+
 MAX_IMAGE_BYTES = 1_500_000
+MAX_IMAGES = 3
 ALLOWED_IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 
 # Ожидающие подтверждения входы: токен -> код, срок, остаток попыток.
@@ -173,6 +180,8 @@ async def start(client, user):
     except tenancy.Denied as d:
         raise ValueError(str(d))
 
+    await loop.run_in_executor(None, check_budget, user["company_id"])
+
     profile = await loop.run_in_executor(
         None, niche_loader.active_profile, user["company_id"])
     if not profile:
@@ -215,6 +224,30 @@ async def start(client, user):
     return _view(session, {"intro": engine.scenario_intro(scenario)})
 
 
+def spent_today(company_id):
+    """Сколько компания потратила на модель с начала суток, в долларах."""
+    row = db.query(
+        """SELECT COALESCE(SUM(cost_usd), 0) AS s FROM usage_log
+            WHERE company_id = %s AND created_at > date_trunc('day', now())""",
+        (company_id,), one=True,
+    ) or {}
+    return float(row.get("s") or 0)
+
+
+def check_budget(company_id):
+    """
+    Не упёрлись ли в дневной потолок. Проверяем по базе, а не по счётчику в
+    памяти: перезапуск панели иначе обнулял бы защиту.
+    """
+    if ROOM_DAILY_USD <= 0:
+        return
+    if spent_today(company_id) >= ROOM_DAILY_USD:
+        raise ValueError(
+            "На сегодня тренировки исчерпаны — отдел много занимался. "
+            "Завтра счётчик обнулится, а пока можно потренироваться в боте."
+        )
+
+
 def parse_image(raw):
     """
     Разобрать картинку из браузера. Приходит строкой вида
@@ -236,18 +269,29 @@ def parse_image(raw):
     return {"media_type": media_type, "data": data}
 
 
-async def say(client, user, text, image=None):
+def parse_images(raw):
+    """
+    Разобрать вложения из браузера: одну строку или список строк.
+    Возвращает список словарей для движка.
+    """
+    items = [raw] if isinstance(raw, str) else list(raw or [])
+    if len(items) > MAX_IMAGES:
+        raise ValueError(f"Больше {MAX_IMAGES} фото за раз клиент не посмотрит")
+    return [p for p in (parse_image(i) for i in items) if p]
+
+
+async def say(client, user, text, images=None):
     """Ход менеджера. Возвращает ответ клиента и состояние сделки."""
     session = await asyncio.get_event_loop().run_in_executor(
         None, store.get, user["telegram_id"])
     if not session:
         raise ValueError("Тренировка не найдена — начните новую")
 
-    picture = parse_image(image)
+    pictures = parse_images(images)
     text = (text or "").strip()[:2000]
-    if not text and not picture:
+    if not text and not pictures:
         raise ValueError("Пустое сообщение")
-    if picture and not text:
+    if pictures and not text:
         # Голое фото без слов движок принимает плохо: ему нужен ход
         # менеджера. Подставляем то, что и так подразумевается.
         text = "(прислал фото)"
@@ -255,17 +299,34 @@ async def say(client, user, text, image=None):
         raise ValueError("Переписка затянулась — завершите её и посмотрите разбор")
 
     loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, check_budget, user["company_id"])
+
+    # Тренировка одна на бота и на комнату. Если человек успел походить с
+    # телефона, пока здесь висела вкладка, наш ход лёг бы поверх чужого и
+    # переписка разъехалась бы. Запоминаем номер хода и сверяем перед записью.
+    started_at_turn = session["turns"]
+
     # В переписку пишем пометку, а не саму картинку: активная тренировка
     # лежит в базе, и складывать туда мегабайты изображений — верный способ
     # раздуть её до неподъёмного состояния. Показывает фото браузер, у себя.
-    session["transcript"].append(["manager", f"📎 {text}" if picture else text])
+    session["transcript"].append(["manager", f"📎 {text}" if pictures else text])
 
     out = await loop.run_in_executor(
-        None, lambda: engine.step(client, session, text, picture))
+        None, lambda: engine.step(client, session, text, pictures))
     _add_usage(session, out["usage"])
     await loop.run_in_executor(
         None, stats.record_usage, user["company_id"], user["telegram_id"],
         "dialog", engine.DIALOG_MODEL, out["usage"])
+
+    latest = await loop.run_in_executor(None, store.get, user["telegram_id"])
+    if latest and latest.get("turns", 0) != started_at_turn:
+        # За время ответа модели тренировка ушла вперёд в другом месте.
+        # Свой ход отбрасываем: две правды в одной переписке хуже потерянной
+        # реплики, а человеку видно, что произошло.
+        raise ValueError(
+            "Эту тренировку продолжили в боте. Обновите страницу — "
+            "переписка подтянется, и можно писать дальше."
+        )
 
     session["turns"] += 1
     state = out["deal_state"]
@@ -317,8 +378,9 @@ async def finish(client, user):
             "debrief", engine.DEBRIEF_MODEL, usage)
 
     await loop.run_in_executor(
-        None, stats.record_session, user, session["scenario"],
-        result, session["turns"], session["transcript"])
+        None, lambda: stats.record_session(
+            user, session["scenario"], result, session["turns"],
+            session["transcript"], via="web"))
     used, limit = await loop.run_in_executor(
         None, tenancy.consume_session, user["company_id"])
     await loop.run_in_executor(None, store.drop, user["telegram_id"])
@@ -518,8 +580,8 @@ def attach(app, bot, anthropic_client, origins):
         user = who(request)
         d = await body(request)
         try:
-            return ok(request, await say(anthropic_client, user,
-                                        d.get("text"), d.get("image")))
+            return ok(request, await say(anthropic_client, user, d.get("text"),
+                                        d.get("images") or d.get("image")))
         except ValueError as e:
             return ok(request, {"error": str(e)}, 400)
         except Exception:

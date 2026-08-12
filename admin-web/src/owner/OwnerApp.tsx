@@ -267,6 +267,10 @@ function Team() {
                   <>
                     <div className="mb-2 text-[11px] uppercase tracking-[0.12em] text-white/35">
                       Последняя тренировка · {date(session.session.finished_at)}
+                      {/* Где тренировались. Полезно знать, чем отдел реально
+                          пользуется: телефоном в дороге или комнатой за столом. */}
+                      {' · '}
+                      {session.session.via === 'web' ? 'в комнате на сайте' : 'в боте'}
                     </div>
                     <div className="max-h-72 space-y-2 overflow-y-auto">
                       {(session.messages || []).map((m: any, i: number) => (

@@ -81,6 +81,9 @@ export default function Users({ onOpenCompany }: { onOpenCompany: (id: number) =
                     <>
                       <div className="mb-3 flex flex-wrap gap-2 text-[12px] text-white/40">
                         <span>{session.session.status_title}</span>
+                        <span className="text-white/30">
+                          {session.session.via === 'web' ? 'комната' : 'бот'}
+                        </span>
                         <span>·</span>
                         <span>{session.session.psychotype_id}</span>
                         <span>·</span>

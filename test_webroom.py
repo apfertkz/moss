@@ -76,16 +76,22 @@ class FakeRequest:
 
 
 async def main():
-    from trainer import webroom, engine, llm, tenancy, stats, store, niche_loader
+    from trainer import webroom, engine, llm, tenancy, stats, store, niche_loader, db
+
+    # База нужна комнате только для дневного потолка расхода. Подменяем её
+    # одним числом: сколько компания уже потратила сегодня.
+    spend = {"usd": 0.0}
+    db.query = lambda sql, params=(), one=False: (
+        {"s": spend["usd"]} if "usage_log" in sql else (None if one else []))
 
     store_ = FakeStore()
     store.get, store.put, store.drop = store_.get, store_.put, store_.drop
     webroom.store = store
 
     recorded = {"sessions": [], "consumed": 0, "usage": []}
-    stats.record_session = lambda user, scenario, result, turns, transcript=None: (
+    stats.record_session = lambda user, scenario, result, turns, transcript=None, via="bot": (
         recorded["sessions"].append({"result": result, "turns": turns,
-                                     "transcript": transcript}) or 1)
+                                     "transcript": transcript, "via": via}) or 1)
     stats.record_usage = lambda *a: recorded["usage"].append(a)
 
     def consume(company_id):
@@ -162,6 +168,8 @@ async def main():
     check("переписка сохранена целиком",
           len(recorded["sessions"][0]["transcript"]) >= 4)
     check("лимит списан ровно один раз", recorded["consumed"] == 1)
+    check("в истории помечено, что тренировались в комнате",
+          recorded["sessions"][0]["via"] == "web", recorded["sessions"][0]["via"])
     check("активная тренировка закрыта", 555 not in store_.data)
     replies["state"] = "active"
 
@@ -238,7 +246,37 @@ async def main():
     check("тренировка началась даже так", bool(r["client"]["name"]), r)
     check("клиент всё равно написал первым", len(r["transcript"]) >= 1, r["transcript"])
 
-    print("\n9. Фото от менеджера")
+    print("\n9. Дневной потолок расхода")
+    spend["usd"] = webroom.ROOM_DAILY_USD + 0.01
+    store_.data.pop(555, None)
+    try:
+        await webroom.start(None, dict(USER))
+        check("при исчерпанном потолке тренировка не начинается", False)
+    except ValueError as e:
+        check("при исчерпанном потолке тренировка не начинается", True)
+        check("отказ мягкий и уводит в бота", "бот" in str(e).lower(), str(e))
+    spend["usd"] = 0.0
+
+    print("\n10. Ход из бота посреди хода из комнаты")
+    await webroom.start(None, dict(USER))
+    stolen = store_.data[555]
+
+    def steal(client, **kw):
+        # Пока модель «думает», тренировку продвинули в боте.
+        stolen["turns"] = stolen.get("turns", 0) + 1
+        return fake_create(client, **kw)
+    llm.create = steal
+    engine.llm.create = steal
+    try:
+        await webroom.say(None, dict(USER), "Пишу из браузера")
+        check("чужой ход не затирается", False)
+    except ValueError as e:
+        check("чужой ход не затирается", True)
+        check("человеку сказано обновить страницу", "обнов" in str(e).lower(), str(e))
+    llm.create = fake_create
+    engine.llm.create = fake_create
+
+    print("\n11. Фото от менеджера")
     llm.create = fake_create
     engine.llm.create = fake_create
     seen_content = {}
@@ -264,6 +302,22 @@ async def main():
 
     out = await webroom.say(None, dict(USER), "", "data:image/png;base64,QUJD")
     check("фото без подписи проходит", out["turns"] >= 2, out["turns"])
+
+    await webroom.say(None, dict(USER), "Вот три работы", [
+        "data:image/jpeg;base64,QUJD",
+        "data:image/png;base64,QUJE",
+        "data:image/webp;base64,QUJG",
+    ])
+    blocks = seen_content["content"]
+    check("три фото ушли тремя блоками",
+          len([b for b in blocks if b["type"] == "image"]) == 3, len(blocks))
+
+    try:
+        await webroom.say(None, dict(USER), "четыре", ["data:image/jpeg;base64,QUJD"] * 4)
+        check("четвёртое фото отклонено", False)
+    except ValueError as e:
+        check("четвёртое фото отклонено", True)
+        check("сказано, сколько можно", "3" in str(e), str(e))
 
     try:
         await webroom.say(None, dict(USER), "смотрите", "data:application/pdf;base64,QUJD")
