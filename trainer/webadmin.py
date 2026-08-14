@@ -149,6 +149,11 @@ async def auth_middleware(request, handler):
     # никакого входа нет. Свои рубежи защиты у него собственные.
     if path.startswith("/api/try/"):
         return await handler(request)
+    # Тренировочная комната на сайте: у неё своя кука и своя проверка входа.
+    # Общий страж её не понимает и отвечал бы 401 без заголовков CORS —
+    # браузер такой ответ прячет, и в комнате это выглядело как обрыв связи.
+    if path.startswith("/api/room/"):
+        return await handler(request)
     if path.startswith("/api/") and path not in open_paths:
         who = identity(request)
         if not who:
@@ -844,6 +849,8 @@ def build_app(bot, anthropic_client=None):
     # Демо для сайта. Без ключа модели его просто нет — панель работает как была.
     if anthropic_client is not None:
         webdemo.attach(app, anthropic_client, SITE_ORIGINS)
+        from . import webroom
+        webroom.attach(app, bot, anthropic_client, SITE_ORIGINS)
 
     if os.path.isdir(os.path.join(STATIC_DIR, "assets")):
         r.add_static("/assets/", os.path.join(STATIC_DIR, "assets"))
