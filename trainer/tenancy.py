@@ -416,6 +416,23 @@ def expiring(days=7):
     )
 
 
+def promote_to_owner(telegram_id, company_id):
+    """
+    Сделать владельцем того, кто уже числится в этой компании.
+
+    Нужно для случая, когда компанию активируют с аккаунта, ранее вошедшего
+    по ссылке-приглашению. Раньше attach_user молча возвращал существующую
+    запись, роль оставалась менеджерской, и компания навсегда оставалась без
+    руководителя: кабинет выдавать было некому, отчёт отправлять — тоже.
+    """
+    db.execute(
+        "UPDATE users SET role=%s WHERE telegram_id=%s AND company_id=%s",
+        (ROLE_OWNER, telegram_id, company_id),
+    )
+    log_action("system", "user.promote", company_id, telegram_id, "менеджер → владелец")
+    return get_user(telegram_id)
+
+
 def owner_of(company_id):
     return db.query(
         "SELECT * FROM users WHERE company_id=%s AND role=%s LIMIT 1",

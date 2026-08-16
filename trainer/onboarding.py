@@ -81,10 +81,17 @@ def redeem(payload, telegram_id, full_name=None, username=None):
         return None, ("Эта компания уже активирована другим аккаунтом. "
                       "Если это ошибка — напишите в поддержку."), False
 
-    user, err = tenancy.attach_user(
-        telegram_id, company["id"], tenancy.ROLE_OWNER, full_name, username)
-    if err:
-        return None, err, False
+    # Владельца в компании ещё нет. Если этот человек уже привязан к ней
+    # менеджером — повышаем его, а не отдаём запись как есть: иначе роль
+    # осталась бы менеджерской, и компания так и стояла бы без руководителя.
+    existing = tenancy.get_user(telegram_id)
+    if existing and existing["company_id"] == company["id"]:
+        user = tenancy.promote_to_owner(telegram_id, company["id"])
+    else:
+        user, err = tenancy.attach_user(
+            telegram_id, company["id"], tenancy.ROLE_OWNER, full_name, username)
+        if err:
+            return None, err, False
 
     plan = tenancy.PLANS[company["plan"]]
     return user, (
