@@ -41,7 +41,7 @@ import time
 
 from aiohttp import web
 
-from . import (db, engine, guide, niche_loader, stats, store, tenancy, webadmin)
+from . import (db, engine, guide, niche_loader, notify, stats, store, tenancy, webadmin)
 
 log = logging.getLogger(__name__)
 
@@ -560,8 +560,17 @@ def attach(app, bot, anthropic_client, origins):
         loop = asyncio.get_event_loop()
         company = await loop.run_in_executor(None, tenancy.get_company, user["company_id"])
         session = await loop.run_in_executor(None, store.get, user["telegram_id"])
+        # Роль для десктоп-приложения: super — из ADMIN_IDS, director —
+        # владелец компании, иначе manager. По ней включается вкладка
+        # «Панель управления».
+        role = "manager"
+        if user.get("role") == tenancy.ROLE_OWNER:
+            role = "director"
+        if user["telegram_id"] in notify.ADMIN_IDS:
+            role = "super"
         return ok(request, {
             "authorized": True,
+            "role": role,
             "name": user.get("full_name") or user.get("username"),
             "company": company["title"] if company else None,
             "used": company["sessions_used"] if company else None,
