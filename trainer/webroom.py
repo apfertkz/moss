@@ -118,7 +118,12 @@ def identity(request):
     комнаты не принимает номер компании из запроса — иначе чужую тренировку
     можно было бы открыть, подставив номер в адрес.
     """
-    got = read_token(request.cookies.get(COOKIE))
+    raw = request.cookies.get(COOKIE)
+    if not raw:
+        _auth = request.headers.get("Authorization", "")
+        if _auth.startswith("Bearer "):
+            raw = _auth[7:].strip()
+    got = read_token(raw)
     if not got:
         return None
     company_id, telegram_id = got
@@ -412,7 +417,7 @@ def attach(app, bot, anthropic_client, origins):
             # Комната ходит с куками, а с ними браузер требует точный адрес
             # источника и это разрешение. Со звёздочкой запрос не пройдёт.
             resp.headers["Access-Control-Allow-Credentials"] = "true"
-            resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
             resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
             resp.headers["Vary"] = "Origin"
         return resp
@@ -510,9 +515,9 @@ def attach(app, bot, anthropic_client, origins):
             return ok(request, {"error": f"Неверный код, осталось попыток: {entry['left']}"}, 400)
 
         _pending.pop(str(d.get("token")), None)
-        resp = ok(request, {"ok": True})
-        return set_cookie(resp, make_token(entry["company_id"], entry["telegram_id"]),
-                          SESSION_DAYS * 86400)
+        _tok = make_token(entry["company_id"], entry["telegram_id"])
+        resp = ok(request, {"ok": True, "token": _tok})
+        return set_cookie(resp, _tok, SESSION_DAYS * 86400)
 
     async def h_logout(request):
         resp = ok(request, {"ok": True})
