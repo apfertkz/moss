@@ -325,6 +325,10 @@ async def say(client, sid, text):
     s = _live.get(sid)
     if not s:
         raise ValueError("Демо устарело — начните заново")
+    if s.get("state") in ("won", "failed"):
+        # Сделка закончилась — дальше разговаривать не с кем. Без этой проверки
+        # с закрытым клиентом можно было переписываться сколько угодно.
+        raise ValueError("Сделка завершена — посмотрите разбор")
     if s["turns"] >= MAX_TURNS:
         raise ValueError("Лимит демо исчерпан")
 

@@ -78,7 +78,11 @@ def main():
     print("\n2. Сценарий и системный промпт")
     sc = engine.new_scenario(profile)
     check("в сценарии есть персона", "persona" in sc and sc["persona"]["name"])
-    check("интро показывает имя", sc["persona"]["name"] in engine.scenario_intro(sc))
+    intro = engine.scenario_intro(sc)
+    check("интро НЕ выдаёт имя", sc["persona"]["name"] not in intro)
+    check("интро НЕ выдаёт роль", sc["status_title"].lower() not in intro.lower())
+    check("интро НЕ выдаёт задачу", sc["request"][:18].lower() not in intro.lower())
+    check("у сценария есть мера сдержанности", sc.get("info_guard_id") in ("soft", "medium", "hard"))
     comp = sum(1 for _ in range(200) if engine.new_scenario(profile)["has_competitor"])
     check("конкурент выпадает примерно в трети случаев", 40 < comp < 100, comp)
 
@@ -87,6 +91,14 @@ def main():
     check("промпт содержит правило простыни", "простын" in prompt)
     check("промпт требует строгой оценки", "НЕ делает тебя снисходительным" in prompt)
     check("промпт просит массив сообщений", "buyer_messages" in prompt)
+    check("задача помечена как скрытая", "ТВОЯ НАСТОЯЩАЯ ЗАДАЧА" in prompt)
+    check("есть блок постепенного раскрытия", "ЧТО ТЫ ГОВОРИШЬ, А ЧТО ДЕРЖИШЬ ПРИ СЕБЕ" in prompt)
+    check("первые реплики без деталей", "В первых двух своих репликах запрещено" in prompt)
+    check("характер проявляется постепенно", "ХАРАКТЕР ПРОЯВЛЯЕТСЯ ПОСТЕПЕННО" in prompt)
+    check("первые ходы оцениваются мягче", "ПЕРВЫЕ ДВА ХОДА МЕНЕДЖЕРА" in prompt)
+    check("сдержанность подставлена в промпт", sc["info_guard"][:25] in prompt)
+    check("запасной опенер не содержит задачу",
+          all(sc["request"][:15].lower() not in o.lower() for o in engine.GENERIC_OPENERS))
 
     print("\n3. Разбивка ответа на несколько сообщений")
     s = make_session(profile)

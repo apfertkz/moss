@@ -212,7 +212,9 @@ async def start(client, user):
             None, engine.opening_message, client, scenario, profile)
     except Exception:
         log.exception("Первое сообщение клиента не собралось")
-        opening, usage = [scenario["request"]], None
+        # Раньше сюда падал scenario["request"] — то есть при любом сбое модели
+        # менеджер получал скрытую ситуацию клиента готовым текстом.
+        opening, usage = [random.choice(engine.GENERIC_OPENERS)], None
 
     _add_usage(session, usage)
     if usage:
@@ -300,6 +302,11 @@ async def say(client, user, text, images=None):
         # Голое фото без слов движок принимает плохо: ему нужен ход
         # менеджера. Подставляем то, что и так подразумевается.
         text = "(прислал фото)"
+    if session.get("closed") or session.get("state") in ("won", "failed"):
+        # Сделка уже закончилась. Раньше проверки не было, и с закрытым клиентом
+        # можно было переписываться бесконечно: тренировка теряла смысл, а разбор
+        # приходил по стенограмме, в которой половина реплик была уже после финала.
+        raise ValueError("Сделка уже завершена — откройте разбор")
     if session["turns"] >= MAX_TURNS:
         raise ValueError("Переписка затянулась — завершите её и посмотрите разбор")
 
@@ -355,24 +362,39 @@ async def say(client, user, text, images=None):
     await loop.run_in_executor(
         None, store.put, user["telegram_id"], user["company_id"], session)
 
-    return _view(session, {
+    over = state in ("won", "failed") or session["turns"] >= MAX_TURNS
+    extra = {
         "messages": [] if state == "silent" else out["buyer_messages"],
         "silence_hours": silence,
-        "over": state in ("won", "failed") or session["turns"] >= MAX_TURNS,
-    })
+        "over": over,
+    }
+
+    # Сделка закончилась — сразу собираем разбор и закрываем тренировку, не
+    # дожидаясь, пока человек нажмёт «Завершить». Иначе исход есть, а выводов
+    # нет: именно ради разбора всё и затевалось.
+    if state in ("won", "failed"):
+        extra["debrief"] = await _wrap_up(client, user, session, state)
+
+    return _view(session, extra)
 
 
-async def finish(client, user):
+async def _wrap_up(client, user, session, state):
     """
-    Разбор и закрытие тренировки. Здесь же списывается тренировка из лимита:
-    начатую и брошенную на первом ходу считать нечестно.
+    Закрыть тренировку и собрать разбор.
+
+    Вызывается дважды по-разному: автоматически, когда сделка закрылась ходом,
+    и по кнопке «Завершить». Поэтому разбор считается один раз и складывается
+    в саму тренировку: второй вызов отдаёт готовое, ничего не пересчитывая и не
+    списывая повторно. Заодно это держит совместимость со старой версией
+    комнаты, которая про автоматический разбор не знает и всё равно нажмёт
+    «Завершить» — она получит тот же самый текст.
     """
     loop = asyncio.get_event_loop()
-    session = await loop.run_in_executor(None, store.get, user["telegram_id"])
-    if not session:
-        raise ValueError("Тренировка не найдена — начните новую")
 
-    state = session.get("state", "active")
+    ready = session.get("debrief")
+    if ready:
+        return ready
+
     result = "won" if state == "won" else "lost"
 
     debrief, usage = await loop.run_in_executor(
@@ -388,15 +410,37 @@ async def finish(client, user):
             session["transcript"], via="web"))
     used, limit = await loop.run_in_executor(
         None, tenancy.consume_session, user["company_id"])
-    await loop.run_in_executor(None, store.drop, user["telegram_id"])
 
-    return {
+    payload = {
         "verdict": debrief,
         "result": result,
         "used": used,
         "limit": limit,
         "warning": tenancy.usage_warning(used, limit),
     }
+    # Тренировку не удаляем сразу: пусть полежит с готовым разбором, чтобы его
+    # можно было забрать и после перезагрузки страницы. Писать в неё уже нельзя —
+    # say() отбивает ход по состоянию сделки, а новая тренировка её перезапишет.
+    session["debrief"] = payload
+    session["closed"] = True
+    await loop.run_in_executor(
+        None, store.put, user["telegram_id"], user["company_id"], session)
+    return payload
+
+
+async def finish(client, user):
+    """
+    Разбор и закрытие тренировки. Здесь же списывается тренировка из лимита:
+    начатую и брошенную на первом ходу считать нечестно.
+    """
+    loop = asyncio.get_event_loop()
+    session = await loop.run_in_executor(None, store.get, user["telegram_id"])
+    if not session:
+        raise ValueError("Тренировка не найдена — начните новую")
+
+    payload = await _wrap_up(client, user, session, session.get("state", "active"))
+    await loop.run_in_executor(None, store.drop, user["telegram_id"])
+    return payload
 
 
 # --- HTTP --------------------------------------------------------------------

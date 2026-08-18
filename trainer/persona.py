@@ -141,7 +141,7 @@ def prompt_block(persona):
     examples = " / ".join(f"«{e}»" for e in persona["writing_examples"])
 
     return f"""=== ТЫ КАК ЖИВОЙ ЧЕЛОВЕК ===
-Тебя зовут {persona['name']}. Ты {persona['status_title'].lower()}.
+Тебя зовут {persona['name']}. Кто ты по роду занятий — описано в твоей ситуации выше.
 Настроение прямо сейчас: {persona['mood']}.
 Обстоятельства: {persona['circumstance']}.
 
