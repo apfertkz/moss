@@ -603,7 +603,7 @@ def final_debrief(client, session, result):
 
     user_content = (
         f"Ниша: {profile.get('title', '')}\n"
-        f"Покупатель: {person['name']}, {scenario['status_title']}, "
+        f"Покупатель: {person['name']}, "
         f"психотип «{p['name']}» (мотивация: {p['motivation']}).\n"
         f"Его скрытая ситуация (менеджер её не знал): {scenario['request']}\n"
         f"Насколько охотно отдавал информацию: {scenario.get('info_guard', 'обычно')}\n"

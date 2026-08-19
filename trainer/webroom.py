@@ -156,13 +156,26 @@ def _view(session, extra=None):
     """
     scenario = session["scenario"]
     person = scenario["persona"]
+
+    # Пока тренировка идёт, о клиенте наружу не уходит ничего: ни имени, ни
+    # роли, ни запроса. Раньше всё это ехало в карточку над перепиской — то
+    # есть менеджер видел ответы к собственному экзамену раньше, чем задал
+    # первый вопрос. Карты раскрываются в разборе, когда сделка закончилась.
+    revealed = bool(session.get("closed") or session.get("debrief"))
+    client_card = {
+        "name": person["name"] if revealed else None,
+        # Роль из справочника ниши наружу не отдаём даже в разборе: она
+        # выбирается независимо от ситуации и может ей противоречить
+        # («офис-менеджер», у которого свадьба дочери). Кто это был на самом
+        # деле — видно из ситуации, она и есть правда о клиенте.
+        "status": None,
+        "request": scenario.get("request") if revealed else None,
+        "niche": (session.get("profile") or {}).get("title"),
+        "revealed": revealed,
+    }
+
     data = {
-        "client": {
-            "name": person["name"],
-            "status": scenario["status_title"],
-            "request": scenario.get("request"),
-            "niche": (session.get("profile") or {}).get("title"),
-        },
+        "client": client_card,
         "transcript": [{"role": r, "text": t} for r, t in session["transcript"]],
         "turns": session["turns"],
         "left": max(0, MAX_TURNS - session["turns"]),
