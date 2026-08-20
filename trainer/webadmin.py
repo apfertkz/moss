@@ -149,6 +149,9 @@ async def auth_middleware(request, handler):
     # никакого входа нет. Свои рубежи защиты у него собственные.
     if path.startswith("/api/try/"):
         return await handler(request)
+    # CRM: своя кука и свой вход, страж админки её маршруты не понимает.
+    if path.startswith("/api/crm/"):
+        return await handler(request)
     # Тренировочная комната на сайте: у неё своя кука и своя проверка входа.
     # Общий страж её не понимает и отвечал бы 401 без заголовков CORS —
     # браузер такой ответ прячет, и в комнате это выглядело как обрыв связи.
@@ -789,6 +792,12 @@ def build_app(bot, anthropic_client=None):
     # ---------- статика ----------
 
     async def index(request):
+        # Поддомен CRM живёт в этом же процессе: тот же сервер, другой вход.
+        if request.host.split(":")[0].startswith("crm."):
+            from . import crm
+            crm_index = os.path.join(crm.STATIC_DIR, "index.html")
+            if os.path.exists(crm_index):
+                return web.FileResponse(crm_index)
         path = os.path.join(STATIC_DIR, "index.html")
         if not os.path.exists(path):
             return web.Response(
@@ -851,6 +860,10 @@ def build_app(bot, anthropic_client=None):
         webdemo.attach(app, anthropic_client, SITE_ORIGINS)
         from . import webroom
         webroom.attach(app, bot, anthropic_client, SITE_ORIGINS)
+
+    # CRM работает и без ключа модели: лиды и оплаты живут в базе, не в LLM.
+    from . import crm
+    crm.attach(app, bot)
 
     if os.path.isdir(os.path.join(STATIC_DIR, "assets")):
         r.add_static("/assets/", os.path.join(STATIC_DIR, "assets"))

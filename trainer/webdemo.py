@@ -484,11 +484,17 @@ def attach(app, anthropic_client, origins):
     async def h_finish(request):
         d = await body(request)
         try:
-            return ok(request, await finish(
+            resp = ok(request, await finish(
                 anthropic_client, d.get("sid"),
                 str(d.get("contact", "")).strip()[:120] or None,
                 str(d.get("name", "")).strip()[:120] or None,
             ))
+            # Контакт оставлен — лид заводится сам, менеджеру стучит бот.
+            # Фоном: человеку разбор важнее нашей записной книжки.
+            if str(d.get("contact", "")).strip():
+                from . import crm
+                asyncio.create_task(crm.lead_from_demo(str(d.get("sid") or "")))
+            return resp
         except ValueError as e:
             return ok(request, {"error": str(e)}, 400)
         except Exception:

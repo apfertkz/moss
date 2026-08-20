@@ -1,0 +1,187 @@
+/* Aisaty CRM — тёмный фирменный стиль. Никакой сборки: один файл. */
+
+:root {
+  --bg: #07080c; --panel: #0e1015; --panel2: #14161d;
+  --line: rgba(255,255,255,.08); --line2: rgba(255,255,255,.14);
+  --txt: #f2f3f7; --dim: #9a9eab; --faint: #5e6270;
+  --acc: #ff5c38; --acc-soft: #ff7a3d; --ok: #4fc07c; --warn: #e3b341; --bad: #e06c6c;
+  --r: 14px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--txt);
+  font: 14px/1.45 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: 'JetBrains Mono', monospace; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input, textarea, select {
+  font: inherit; color: var(--txt); width: 100%;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 12px; outline: none;
+}
+input:focus, textarea:focus, select:focus { border-color: var(--acc); }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: rgba(150,150,160,.25); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 9px 16px; border-radius: 11px; font-weight: 600; font-size: 13.5px;
+  transition: filter .15s, transform .1s; white-space: nowrap;
+}
+.btn:active { transform: translateY(1px); }
+.btn-acc { background: linear-gradient(180deg, #ff6a44, #ec4a26); color: #fff; }
+.btn-acc:hover { filter: brightness(1.07); }
+.btn-ghost { border: 1px solid var(--line2); color: var(--dim); }
+.btn-ghost:hover { color: var(--txt); border-color: rgba(255,255,255,.25); }
+.btn-sm { padding: 6px 11px; font-size: 12.5px; border-radius: 9px; }
+.btn[disabled] { opacity: .45; pointer-events: none; }
+
+/* ── вход ── */
+.login {
+  min-height: 100dvh; display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(60% 45% at 50% 0%, rgba(255,92,56,.12), transparent 70%), var(--bg);
+  padding: 24px;
+}
+.login-card { width: 100%; max-width: 360px; text-align: center; }
+.login-card img { width: 52px; height: 52px; margin-bottom: 18px; }
+.login-card h1 { font-size: 22px; letter-spacing: -.02em; margin-bottom: 6px; }
+.login-card p { color: var(--dim); font-size: 13.5px; margin-bottom: 22px; }
+.login-card form { display: flex; gap: 8px; }
+.login-card .code { text-align: center; font-size: 20px; letter-spacing: .4em; }
+.login-err { color: var(--bad); font-size: 13px; margin-top: 12px; }
+
+/* ── каркас ── */
+.top {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 18px; background: rgba(7,8,12,.85);
+  backdrop-filter: blur(14px); border-bottom: 1px solid var(--line);
+}
+.top img { width: 26px; height: 26px; }
+.top b { font-size: 15px; letter-spacing: -.01em; }
+.top .chip {
+  padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--dim); font-size: 12px;
+}
+.top .sp { flex: 1; }
+
+/* ── доска ── */
+.board {
+  display: flex; gap: 14px; padding: 18px;
+  overflow-x: auto; min-height: calc(100dvh - 61px); align-items: flex-start;
+  scroll-snap-type: x proximity;
+}
+.col {
+  flex: 0 0 292px; scroll-snap-align: start;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  display: flex; flex-direction: column; max-height: calc(100dvh - 100px);
+}
+.col-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line);
+  font-weight: 600; font-size: 13px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--dim);
+}
+.col-head .n {
+  margin-left: auto; min-width: 22px; text-align: center;
+  background: var(--panel2); border-radius: 999px; padding: 1px 7px;
+  font-size: 12px; color: var(--faint);
+}
+.col[data-status="new"]  .col-head { color: var(--acc-soft); }
+.col[data-status="paid"] .col-head { color: var(--ok); }
+.col-body { padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.col-body.drag-over { outline: 2px dashed var(--acc); outline-offset: -6px; border-radius: 12px; }
+
+.card {
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 11px 12px; cursor: grab; transition: border-color .15s, transform .12s;
+}
+.card:hover { border-color: var(--line2); transform: translateY(-1px); }
+.card.dragging { opacity: .45; }
+.card b { display: block; font-size: 13.5px; margin-bottom: 2px; }
+.card .c-contact { color: var(--acc-soft); font-size: 12.5px; }
+.card .c-niche {
+  color: var(--dim); font-size: 12px; margin-top: 5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.card .c-meta {
+  display: flex; gap: 6px; align-items: center; margin-top: 8px;
+  font-size: 11px; color: var(--faint); flex-wrap: wrap;
+}
+.card .tag { border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; }
+.card .tag.won { color: var(--ok); border-color: rgba(79,192,124,.4); }
+.card .tag.lost { color: var(--bad); border-color: rgba(224,108,108,.35); }
+.card .tag.pilot-on { color: var(--ok); border-color: rgba(79,192,124,.4); }
+
+/* ── модалки ── */
+.overlay {
+  position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.6);
+  backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center;
+  padding: 4vh 16px; overflow-y: auto;
+}
+.modal {
+  width: 100%; max-width: 560px; background: var(--panel);
+  border: 1px solid var(--line2); border-radius: 18px; padding: 20px;
+  animation: pop .22s cubic-bezier(.2,.8,.2,1);
+}
+@keyframes pop { from { opacity: 0; transform: translateY(14px) scale(.98); } }
+.modal h2 { font-size: 17px; letter-spacing: -.01em; }
+.m-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 14px; }
+.m-head .x { margin-left: auto; color: var(--faint); font-size: 20px; padding: 2px 8px; }
+.m-head .x:hover { color: var(--txt); }
+.m-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.m-grid .full { grid-column: 1 / -1; }
+.f label { display: block; font-size: 11.5px; color: var(--faint); margin: 0 0 4px 2px;
+           letter-spacing: .05em; text-transform: uppercase; }
+.m-links { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.m-links a {
+  color: var(--acc-soft); text-decoration: none; font-size: 13px;
+  border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px;
+}
+.m-links a:hover { border-color: var(--acc); }
+.m-block {
+  border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-top: 12px;
+  font-size: 13px;
+}
+.m-block h3 { font-size: 12px; color: var(--faint); text-transform: uppercase;
+              letter-spacing: .06em; margin-bottom: 8px; }
+.m-block .verdict { color: var(--dim); white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
+.m-company { border-color: rgba(79,192,124,.3); }
+.m-company .row { display: flex; justify-content: space-between; margin: 3px 0; color: var(--dim); }
+.m-company .row b { color: var(--txt); font-weight: 600; }
+.m-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.m-note { margin-top: 12px; }
+.m-note textarea { min-height: 74px; resize: vertical; }
+.invoice-box {
+  margin-top: 12px; background: var(--panel2); border: 1px dashed var(--line2);
+  border-radius: 12px; padding: 12px; white-space: pre-wrap;
+  font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--dim);
+}
+
+/* команда */
+.team-row { display: flex; align-items: center; gap: 10px; padding: 9px 2px;
+            border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.team-row .role { color: var(--faint); font-size: 12px; }
+.team-row .rm { margin-left: auto; color: var(--faint); }
+.team-row .rm:hover { color: var(--bad); }
+.team-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; }
+
+/* toast */
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  z-index: 60; background: #1a1d26; border: 1px solid var(--line2);
+  color: var(--txt); padding: 11px 18px; border-radius: 12px; font-size: 13.5px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.5); animation: pop .2s;
+}
+.toast.err { border-color: rgba(224,108,108,.5); }
+
+@media (max-width: 640px) {
+  .board { padding: 12px; gap: 10px; }
+  .col { flex-basis: 84vw; }
+  .m-grid { grid-template-columns: 1fr; }
+  .top { flex-wrap: wrap; row-gap: 8px; }
+}
